@@ -85,10 +85,10 @@ data class MeterUiState(
     val active: Reference? get() = references.firstOrNull { it.id == activeId }
     val busy: Boolean get() = measuring || task?.running == true
 
-    /** A light task can start: camera running, light reachable, brightness chosen. */
+    /** A light task can start: camera running, light reachable, on, brightness chosen. */
     val canRunLightTask: Boolean
         get() = cameraOpen && !busy && !live && calSession == null &&
-            lightStatus == LightRig.Status.ONLINE && light?.brightness != null
+            lightStatus == LightRig.Status.ONLINE && light?.on == true && (light.brightness ?: 0) > 0
 
     /** Sensor-model reading with the stored calibration applied, if there is one. */
     fun corrected(xy: Xy): CctDuv = cctDuv(xy).let { calibration?.apply(it) ?: it }
@@ -239,6 +239,8 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     // --- Light ---------------------------------------------------------------
 
     fun setLightBrightness(percent: Int) = lightCall { target()?.let { rig.setBrightness(it, percent) } }
+
+    fun setLightOn(on: Boolean) = lightCall { target()?.let { rig.setOn(it, on) } }
 
     fun reconnectLight() = lightCall { rig.reconnect() }
 

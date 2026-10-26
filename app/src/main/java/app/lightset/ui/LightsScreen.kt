@@ -5,12 +5,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -24,7 +21,6 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -37,6 +33,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -47,7 +44,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -78,7 +74,8 @@ fun LightsScreen(vm: LightsViewModel) {
         }
         if (state.status == LightRig.Status.OFFLINE && state.lights.isNotEmpty()) {
             Text(
-                (state.statusError ?: "Not connected") + " · tap a light's status to retry",
+                (state.statusError ?: "Not connected") + " · tap to retry",
+                Modifier.clickable(onClick = vm::reconnect),
                 style = MaterialTheme.typography.bodySmall, color = WarnAmber,
             )
         }
@@ -102,8 +99,10 @@ fun lightStatus(node: MeshNode, state: LightsUiState): LightRig.Status = when {
     else -> LightRig.Status.OFFLINE
 }
 
-/** Manual control of one light, sent as you move the controls. */
-@OptIn(ExperimentalLayoutApi::class)
+/**
+ * One light: a single header row (colour, name, summary, on/off) that expands to its
+ * controls. Changes are sent as you move the controls.
+ */
 @Composable
 private fun LightControlCard(node: MeshNode, state: LightsUiState, vm: LightsViewModel) {
     val limits = node.model.limits
@@ -114,27 +113,49 @@ private fun LightControlCard(node: MeshNode, state: LightsUiState, vm: LightsVie
     val online = state.status == LightRig.Status.ONLINE
     val l = state.states[node.unicast] ?: LightRig.LightState(null, 5600, 0)
     val brightness = l.brightness ?: 20
-    var expanded by rememberSaveable(node.unicast) { mutableStateOf(true) }
-    fun set(b: Int = brightness, cct: Int = l.cct, gm: Int = l.gm) =
-        vm.setLight(node.unicast, l.copy(brightness = b, cct = cct.coerceIn(cctRange), gm = gm, mode = LightRig.Mode.CCT))
-    fun setHsi(b: Int = brightness, hue: Int = l.hue, sat: Int = l.sat) =
-        vm.setLight(node.unicast, l.copy(brightness = b, hue = hue, sat = sat, mode = LightRig.Mode.HSI))
+    val hsi = l.mode == LightRig.Mode.HSI && node.model.rgb
+    var expanded by rememberSaveable(node.unicast) { mutableStateOf(false) }
+    fun send(s: LightRig.LightState) = vm.setLight(node.unicast, s.copy(brightness = s.brightness ?: brightness))
+    fun set(cct: Int = l.cct, gm: Int = l.gm) =
+        send(l.copy(cct = cct.coerceIn(cctRange), gm = gm, mode = LightRig.Mode.CCT))
+    fun setHsi(hue: Int = l.hue, sat: Int = l.sat) = send(l.copy(hue = hue, sat = sat, mode = LightRig.Mode.HSI))
 
     Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(Modifier.padding(start = 12.dp, top = 4.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f).clickable { expanded = !expanded }) {
-                    Text(node.name, style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "${node.model.label} · " + if (l.mode == LightRig.Mode.HSI) "colour ${l.hue}°, ${l.sat}%"
-                        else "${l.brightness?.let { "$it%" } ?: "—"} · ${formatKelvin(l.cct.toDouble())}" +
-                            if (limits.hasGm) " · G/M %+d".format(l.gm) else "",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                Row(
+                    Modifier.weight(1f).clickable { expanded = !expanded }.padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val swatch = when {
+                        !l.on -> Color(0xFF424242)
+                        hsi -> Color.hsv(l.hue.toFloat(), l.sat / 100f, 1f)
+                        else -> kelvinColor(l.cct)
+                    }
+                    Box(Modifier.size(26.dp).background(swatch, CircleShape))
+                    Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(node.name, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                            Box(Modifier.padding(start = 8.dp).size(8.dp).background(statusColor(status), CircleShape))
+                        }
+                        Text(
+                            (if (l.on) "${l.brightness?.let { "$it%" } ?: "—"} · " else "Off · ") +
+                                if (hsi) "hue ${l.hue}°, sat ${l.sat}%"
+                                else formatKelvin(l.cct.toDouble()) + if (limits.hasGm) " · G/M %+d".format(l.gm) else "",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
+                    Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = if (expanded) "Hide controls" else "Show controls")
                 }
-                LightStatusChip("", status, onRetry = vm::reconnect,
-                    offlineLabel = if (state.status == LightRig.Status.ONLINE) "No reply" else "Offline · tap to retry")
+                Switch(
+                    checked = l.on,
+                    onCheckedChange = { send(l.copy(on = it)) },
+                    enabled = online,
+                    modifier = Modifier.padding(start = 4.dp),
+                )
                 NodeMenu(node, vm)
             }
             state.notice?.takeIf { it.first == node.unicast }?.let {
@@ -145,40 +166,50 @@ private fun LightControlCard(node: MeshNode, state: LightsUiState, vm: LightsVie
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (!expanded) return@Column
-            if (node.model.rgb) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = l.mode == LightRig.Mode.CCT, onClick = { set() }, enabled = online,
-                        label = { Text("White (CCT)") })
-                    FilterChip(selected = l.mode == LightRig.Mode.HSI, onClick = { setHsi() }, enabled = online,
-                        label = { Text("Colour (HSI)") })
-                }
-            }
-            ValueControl("Brightness", brightness, 0..100, step = 1, format = { "$it%" }, enabled = online,
-                onChange = { if (l.mode == LightRig.Mode.CCT) set(b = it) else setHsi(b = it) })
-            if (l.mode == LightRig.Mode.HSI && node.model.rgb) {
-                HsiControls(l, online, onHue = { setHsi(hue = it) }, onSat = { setHsi(sat = it) })
-            } else {
-                ValueControl(
-                    "CCT", l.cct.coerceIn(cctRange), cctRange, step = 50, format = { formatKelvin(it.toDouble()) },
-                    enabled = online, onChange = { set(cct = it) },
-                    toSlider = { cctToSlider(it, cctRange) },
-                    fromSlider = { sliderToCct(it, cctRange) },
-                )
-                if (limits.hasGm) {
-                    ValueControl("G/M", l.gm.coerceIn(limits.gmMin, limits.gmMax), limits.gmMin..limits.gmMax, step = 1,
-                        format = { if (it == 0) "0" else "%+d %s".format(it, if (it > 0) "G" else "M") },
-                        enabled = online, onChange = { set(gm = it) })
-                }
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for (k in listOf(2700, 3200, 4300, 5600, 6500).filter { it in cctRange }) {
-                        AssistChip(onClick = { set(cct = k) }, enabled = online, label = { Text(formatKelvin(k.toDouble())) })
+            Column(Modifier.padding(end = 12.dp)) {
+                if (node.model.rgb) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = !hsi, onClick = { set() }, enabled = online, label = { Text("White") })
+                        FilterChip(selected = hsi, onClick = { setHsi() }, enabled = online, label = { Text("Colour") })
                     }
-                    if (limits.hasGm) AssistChip(onClick = { set(gm = 0) }, enabled = online, label = { Text("G/M 0") })
+                }
+                ValueControl("Brightness", brightness, 0..100, step = 1, format = { "$it%" }, enabled = online,
+                    onChange = { send(l.copy(brightness = it, on = true)) })
+                if (hsi) {
+                    HsiControls(l, online, onHue = { setHsi(hue = it) }, onSat = { setHsi(sat = it) })
+                } else {
+                    ValueControl(
+                        "CCT", l.cct.coerceIn(cctRange), cctRange, step = 50, format = { formatKelvin(it.toDouble()) },
+                        enabled = online, onChange = { set(cct = it) },
+                        toSlider = { cctToSlider(it, cctRange) },
+                        fromSlider = { sliderToCct(it, cctRange) },
+                        track = cctTrack(cctRange),
+                    )
+                    if (limits.hasGm) {
+                        val gmRange = limits.gmMin..limits.gmMax
+                        ValueControl("G/M", l.gm.coerceIn(gmRange), gmRange, step = 1,
+                            format = { if (it == 0) "0" else "%+d %s".format(it, if (it > 0) "G" else "M") },
+                            enabled = online, onChange = { set(gm = it) }, track = gmTrack(gmRange))
+                    }
+                    Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        for (k in listOf(2700, 3200, 4300, 5600, 6500).filter { it in cctRange }) {
+                            SwatchButton("${k}K", kelvinColor(k), online, { set(cct = k) }, Modifier.weight(1f))
+                        }
+                        if (limits.hasGm) {
+                            SwatchButton("G/M 0", Color(0xFFEEEEEE), online, { set(gm = 0) }, Modifier.weight(1f))
+                        }
+                    }
                 }
             }
             state.controlError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         }
     }
+}
+
+private fun statusColor(status: LightRig.Status) = when (status) {
+    LightRig.Status.ONLINE -> GoodGreen
+    LightRig.Status.CONNECTING -> WarnAmber
+    LightRig.Status.OFFLINE -> Color(0xFF9E9E9E)
 }
 
 @Composable
@@ -301,28 +332,14 @@ private fun AddLightCard(add: AddLightUi, vm: LightsViewModel) {
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun HsiControls(l: LightRig.LightState, enabled: Boolean, onHue: (Int) -> Unit, onSat: (Int) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(28.dp).background(Color.hsv(l.hue.toFloat(), l.sat / 100f, 1f), CircleShape))
-        Text("  hue ${l.hue}°, saturation ${l.sat}%", style = MaterialTheme.typography.bodyMedium)
-    }
-    // Rainbow strip so the hue slider reads at a glance.
-    Box(
-        Modifier.fillMaxWidth().padding(horizontal = 48.dp).height(6.dp)
-            .background(Brush.horizontalGradient((0..6).map { Color.hsv(it * 60f % 360f, 1f, 1f) }), RoundedCornerShape(3.dp))
-    )
-    ValueControl("Hue", l.hue, 0..359, step = 1, format = { "$it°" }, enabled = enabled, onChange = onHue)
-    ValueControl("Saturation", l.sat, 0..100, step = 1, format = { "$it%" }, enabled = enabled, onChange = onSat)
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    ValueControl("Hue", l.hue, 0..359, step = 1, format = { "$it°" }, enabled = enabled, onChange = onHue, track = hueTrack)
+    ValueControl("Saturation", l.sat, 0..100, step = 1, format = { "$it%" }, enabled = enabled, onChange = onSat,
+        track = satTrack(l.hue))
+    Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         for ((name, hue) in listOf("Red" to 0, "Amber" to 35, "Green" to 120, "Cyan" to 180, "Blue" to 240, "Magenta" to 300)) {
-            AssistChip(
-                onClick = { onHue(hue) },
-                enabled = enabled,
-                label = { Text(name) },
-                leadingIcon = { Box(Modifier.size(12.dp).background(Color.hsv(hue.toFloat(), 1f, 1f), CircleShape)) },
-            )
+            SwatchButton(name, Color.hsv(hue.toFloat(), 1f, 1f), enabled, { onHue(hue) }, Modifier.weight(1f))
         }
     }
 }

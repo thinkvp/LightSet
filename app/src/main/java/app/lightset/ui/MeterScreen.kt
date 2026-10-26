@@ -35,6 +35,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -301,7 +302,7 @@ private fun LightCard(state: MeterUiState, vm: MeterViewModel) {
                     LightPicker(state, vm)
                     Text(
                         light?.let {
-                            "${it.brightness?.let { b -> "$b%" } ?: "brightness not set"} · " +
+                            (if (!it.on) "Off · " else "${it.brightness?.let { b -> "$b%" } ?: "brightness not set"} · ") +
                                 if (it.mode == LightRig.Mode.HSI) "colour: hue ${it.hue}°, sat ${it.sat}%"
                                 else "${formatKelvin(it.cct.toDouble())} · G/M %+d".format(it.gm)
                         } ?: "",
@@ -309,6 +310,12 @@ private fun LightCard(state: MeterUiState, vm: MeterViewModel) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                Switch(
+                    checked = light?.on == true,
+                    onCheckedChange = vm::setLightOn,
+                    enabled = online && task?.running != true && light != null,
+                    modifier = Modifier.padding(end = 8.dp),
+                )
                 if (task?.running == true) {
                     TextButton(onClick = vm::stopTask) { Text("Stop") }
                 } else {
@@ -322,8 +329,10 @@ private fun LightCard(state: MeterUiState, vm: MeterViewModel) {
                     color = WarnAmber, style = MaterialTheme.typography.bodySmall)
             }
             BrightnessRow(light?.brightness, enabled = online && task?.running != true, onSet = vm::setLightBrightness)
-            if (light?.brightness == null) {
-                Text("Set brightness first. Matching only changes CCT and G/M.",
+            if (light?.brightness == null || light.brightness == 0 || !light.on) {
+                Text(
+                    if (light?.on == false) "Light is off — turn it on to match."
+                    else "Set brightness first. Matching only changes CCT and G/M.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             task?.let { TaskView(it, onDismiss = vm::dismissTask) }
@@ -384,7 +393,7 @@ private fun BrightnessRow(brightness: Int?, enabled: Boolean, onSet: (Int) -> Un
             value = value,
             onValueChange = { value = it },
             onValueChangeFinished = { onSet(value.roundToInt()) },
-            valueRange = 1f..100f,
+            valueRange = 0f..100f,
             enabled = enabled,
             modifier = Modifier.weight(1f),
         )

@@ -1,11 +1,14 @@
 package app.lightset.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -16,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -30,12 +34,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import app.lightset.LightRig
 import kotlin.math.abs
+import kotlin.math.ln
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 val GoodGreen = Color(0xFF66BB6A)
@@ -81,10 +91,12 @@ fun LightStatusChip(
 }
 
 /**
- * One light parameter: label and value (tap the value to type one), a slider, and
- * − / + for fine steps. [toSlider]/[fromSlider] map the value onto 0..1, e.g. so CCT
- * moves evenly in mired rather than kelvin.
+ * One light parameter on a single row: label over value (tap the value to type one),
+ * then − / slider / +. [toSlider]/[fromSlider] map the value onto 0..1, e.g. so CCT
+ * moves evenly in mired rather than kelvin. A [track] brush paints the slider's track
+ * with what it sets (the hue spectrum, say), so it needs no separate legend.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ValueControl(
     label: String,
@@ -96,31 +108,42 @@ fun ValueControl(
     onChange: (Int) -> Unit,
     toSlider: (Int) -> Float = { (it - range.first).toFloat() / (range.last - range.first) },
     fromSlider: (Float) -> Int = { (range.first + it * (range.last - range.first)).roundToInt() },
+    track: Brush? = null,
 ) {
     var editing by remember { mutableStateOf(false) }
-    Column {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(label, Modifier.width(96.dp), style = MaterialTheme.typography.bodyMedium)
-            Text(
-                format(value),
-                Modifier.clickable(enabled = enabled) { editing = true }.padding(vertical = 4.dp),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.width(72.dp).clickable(enabled = enabled) { editing = true }) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(format(value), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        }
+        IconButton(onClick = { onChange((value - step).coerceIn(range)) }, enabled = enabled, modifier = Modifier.size(36.dp)) {
+            Icon(Icons.Filled.Remove, contentDescription = "Decrease $label", modifier = Modifier.size(18.dp))
+        }
+        val position = toSlider(value).coerceIn(0f, 1f)
+        val change: (Float) -> Unit = { onChange(fromSlider(it).coerceIn(range)) }
+        if (track == null) {
+            Slider(value = position, onValueChange = change, enabled = enabled, modifier = Modifier.weight(1f))
+        } else {
+            Slider(
+                value = position,
+                onValueChange = change,
+                enabled = enabled,
+                modifier = Modifier.weight(1f).alpha(if (enabled) 1f else 0.4f),
+                thumb = {
+                    Box(
+                        Modifier.size(22.dp)
+                            .border(1.dp, Color(0x99000000), CircleShape)
+                            .padding(1.dp)
+                            .border(3.dp, Color.White, CircleShape)
+                    )
+                },
+                track = {
+                    Box(Modifier.fillMaxWidth().height(12.dp).background(track, RoundedCornerShape(6.dp)))
+                },
             )
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { onChange((value - step).coerceIn(range)) }, enabled = enabled) {
-                Icon(Icons.Filled.Remove, contentDescription = "Decrease $label")
-            }
-            Slider(
-                value = toSlider(value).coerceIn(0f, 1f),
-                onValueChange = { onChange(fromSlider(it).coerceIn(range)) },
-                enabled = enabled,
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = { onChange((value + step).coerceIn(range)) }, enabled = enabled) {
-                Icon(Icons.Filled.Add, contentDescription = "Increase $label")
-            }
+        IconButton(onClick = { onChange((value + step).coerceIn(range)) }, enabled = enabled, modifier = Modifier.size(36.dp)) {
+            Icon(Icons.Filled.Add, contentDescription = "Increase $label", modifier = Modifier.size(18.dp))
         }
     }
     if (editing) {
@@ -147,6 +170,52 @@ fun ValueControl(
         )
     }
 }
+
+/** A small preset button filled with the colour it sets. */
+@Composable
+fun SwatchButton(label: String, color: Color, enabled: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .height(30.dp)
+            .alpha(if (enabled) 1f else 0.4f)
+            .background(color, RoundedCornerShape(6.dp))
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, fontSize = 11.sp, maxLines = 1, color = if (color.luminance() > 0.4f) Color.Black else Color.White)
+    }
+}
+
+/** Approximate display colour of a blackbody at [k] kelvin (Tanner Helland's fit). */
+fun kelvinColor(k: Int): Color {
+    val t = k / 100.0
+    val r = if (t <= 66) 255.0 else 329.698727446 * (t - 60).pow(-0.1332047592)
+    val g = if (t <= 66) 99.4708025861 * ln(t) - 161.1195681661 else 288.1221695283 * (t - 60).pow(-0.0755148492)
+    val b = when {
+        t >= 66 -> 255.0
+        t <= 19 -> 0.0
+        else -> 138.5177312231 * ln(t - 10) - 305.0447927307
+    }
+    return Color((r / 255).toFloat().coerceIn(0f, 1f), (g / 255).toFloat().coerceIn(0f, 1f), (b / 255).toFloat().coerceIn(0f, 1f))
+}
+
+/** Warm-to-cool track for a CCT slider, matching its mired spacing. */
+fun cctTrack(range: IntRange): Brush =
+    Brush.horizontalGradient((0..8).map { kelvinColor(sliderToCct(it / 8f, range)) })
+
+/** Magenta through neutral to green, with neutral at G/M 0. */
+fun gmTrack(range: IntRange): Brush {
+    val zero = (-range.first).toFloat() / (range.last - range.first)
+    return Brush.horizontalGradient(
+        0f to Color(0xFFD45FD4), zero.coerceIn(0.01f, 0.99f) to Color(0xFFEEEEEE), 1f to Color(0xFF5FBF5F),
+    )
+}
+
+/** The hue spectrum at full saturation. */
+val hueTrack: Brush = Brush.horizontalGradient((0..6).map { Color.hsv(it * 60f % 360f, 1f, 1f) })
+
+/** White to the fully saturated [hue]. */
+fun satTrack(hue: Int): Brush = Brush.horizontalGradient(listOf(Color.White, Color.hsv(hue.toFloat(), 1f, 1f)))
 
 /** CCT slider position, even in mired (perceptually even) from warm (left) to cool. */
 fun cctToSlider(k: Int, range: IntRange): Float {

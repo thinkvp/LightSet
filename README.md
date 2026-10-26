@@ -17,7 +17,8 @@ lights over Bluetooth until their colour matches it.
   reach the tint (no G/M, or out of green at warm CCTs), it matches CCT and suggests a gel.
 - **Lights:** adds Nanlite lights to its own Bluetooth Mesh network (after a Bluetooth
   reset on the light), then controls brightness, CCT, G/M and colour (HSI) for each,
-  with online/offline status.
+  with online/offline status. Each light can be switched off and back on to its
+  previous settings, here and on the Match tab.
 
 ## How the lights are controlled
 
@@ -33,7 +34,12 @@ Quirks found so far:
 - Any write makes the light re-apply brightness, CCT and G/M from values its module
   stores, and those reset on reconnect. So the app owns each light's full state and
   sends all of it every time, with G/M last.
-- Knob changes on the light aren't reported back.
+- Knob changes on the light aren't reported back, and reads return the module's
+  stored values, not the knobs'. A vendor read also makes the light re-apply those
+  stored values, so the app never reads a light just to check it's there: it sends a
+  Config message with the light's device key instead, which leaves knob settings
+  alone. Lights added by other apps (no device key) still get a read, so add every
+  light through LightSet.
 - Some lights (e.g. PavoTube) act on writes but don't answer reads, so status is
   checked with a configuration request instead.
 

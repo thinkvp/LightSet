@@ -37,7 +37,10 @@ class LightRig(private val app: Application) {
     enum class Status { OFFLINE, CONNECTING, ONLINE }
     enum class Mode { CCT, HSI }
 
-    /** What the app has a light set to. Brightness is null until the user sets it. */
+    /**
+     * What the app has a light set to. Brightness is null until the user sets it. While
+     * [on] is false the light is sent 0% but keeps its brightness for turning back on.
+     */
     data class LightState(
         val brightness: Int?,
         val cct: Int,
@@ -45,7 +48,11 @@ class LightRig(private val app: Application) {
         val mode: Mode = Mode.CCT,
         val hue: Int = 0,
         val sat: Int = 100,
-    )
+        val on: Boolean = true,
+    ) {
+        /** Brightness actually sent to the light. */
+        val output: Int? get() = if (on) brightness else 0
+    }
 
     val mesh = MeshStore(app)
     private val lock = Mutex()
@@ -273,8 +280,12 @@ class LightRig(private val app: Application) {
 
     // --- Settings --------------------------------------------------------------
 
+    /** Sets brightness, turning the light on if it was off. */
     suspend fun setBrightness(unicast: Int, percent: Int) =
-        send(unicast, state(unicast).copy(brightness = percent.coerceIn(0, 100)))
+        send(unicast, state(unicast).copy(brightness = percent.coerceIn(0, 100), on = true))
+
+    /** Turns a light off (0%) or back on at its remembered settings. */
+    suspend fun setOn(unicast: Int, on: Boolean) = send(unicast, state(unicast).copy(on = on))
 
     suspend fun set(unicast: Int, s: LightState) = send(unicast, s)
 
@@ -283,7 +294,7 @@ class LightRig(private val app: Application) {
         send(unicast, state(unicast).copy(mode = Mode.CCT, cct = setting.cct, gm = setting.gm))
 
     /** Turns a light to 0% (for an ambient-only reading) without forgetting its brightness. */
-    suspend fun lightOff(unicast: Int) = send(unicast, state(unicast).copy(brightness = 0), remember = false)
+    suspend fun lightOff(unicast: Int) = send(unicast, state(unicast).copy(on = false), remember = false)
 
     /** Re-sends the remembered state, e.g. after [lightOff]. */
     suspend fun restore(unicast: Int) = send(unicast, state(unicast))
@@ -310,6 +321,7 @@ class LightRig(private val app: Application) {
             .putString("mode_$unicast", s.mode.name)
             .putInt("hue_$unicast", s.hue)
             .putInt("sat_$unicast", s.sat)
+            .putBoolean("on_$unicast", s.on)
             .apply()
     }
 
@@ -319,7 +331,7 @@ class LightRig(private val app: Application) {
             // Colour needs the extended set_mode packet: separate hue/sat writes
             // don't switch the light out of CCT mode.
             l.sendExtended(dst) { seq ->
-                NanliteProtocol.setMode(seq, s.brightness ?: 50, NanliteProtocol.MODE_HSI, 0x01,
+                NanliteProtocol.setMode(seq, s.output ?: 50, NanliteProtocol.MODE_HSI, 0x01,
                     NanliteProtocol.hsiParams(s.hue.coerceIn(0, 359), s.sat.coerceIn(0, 100)))
             }
             sentMode[dst] = Mode.HSI
@@ -328,7 +340,7 @@ class LightRig(private val app: Application) {
         if (sentMode[dst] != Mode.CCT) {
             // Switch to CCT mode first (from colour, or unknown after reconnecting).
             l.sendExtended(dst) { seq ->
-                NanliteProtocol.setMode(seq, s.brightness ?: 50, NanliteProtocol.MODE_CCT, 0x02,
+                NanliteProtocol.setMode(seq, s.output ?: 50, NanliteProtocol.MODE_CCT, 0x02,
                     NanliteProtocol.cctParams(s.cct, s.gm))
             }
             sentMode[dst] = Mode.CCT
@@ -336,7 +348,7 @@ class LightRig(private val app: Application) {
         }
         // G/M goes last: a later brightness or CCT write was observed to leave the
         // light's G/M unchanged even after a G/M write. Spaced so none get dropped.
-        s.brightness?.let {
+        s.output?.let {
             l.write(dst, NanliteProtocol.Param.BRIGHTNESS.id, it, 0)
             delay(WRITE_GAP_MS)
         }
@@ -364,6 +376,7 @@ class LightRig(private val app: Application) {
             mode = runCatching { Mode.valueOf(prefs.getString("mode_$unicast", null) ?: "CCT") }.getOrDefault(Mode.CCT),
             hue = prefs.getInt("hue_$unicast", 0),
             sat = prefs.getInt("sat_$unicast", 100),
+            on = prefs.getBoolean("on_$unicast", true),
         )
     }
 
