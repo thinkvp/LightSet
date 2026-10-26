@@ -1,0 +1,520 @@
+package app.lightset.ui
+
+import android.graphics.SurfaceTexture
+import android.view.TextureView
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.lightset.LightRig
+import app.lightset.camera.ExposureWarning
+import app.lightset.camera.MeterSource
+import app.lightset.camera.Reading
+import app.lightset.color.CctDuv
+import app.lightset.color.Delta
+import app.lightset.color.Xy
+import app.lightset.color.delta
+import app.lightset.data.Reference
+import java.text.DateFormat
+import java.util.Date
+import kotlin.math.abs
+import kotlin.math.roundToInt
+
+/** Within this, a light reads as matched to the reference. */
+private const val MATCH_MIRED = 5.0
+private const val MATCH_DUV = 0.0015
+
+@Composable
+fun MeterScreen(vm: MeterViewModel) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    var saving by rememberSaveable { mutableStateOf(false) }
+    val info = remember { vm.cameraInfo() }
+    val shown = state.reading?.let { state.corrected(it.xy) }
+
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+        Header(state, vm)
+
+        // Camera and reading side by side, controls directly beneath: always on screen.
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.Top) {
+            val aspect = info?.previewSize?.let { it.height.toFloat() / it.width } ?: 0.75f
+            Box(
+                Modifier
+                    .weight(0.42f)
+                    .aspectRatio(aspect)
+                    .background(Color.Black, RoundedCornerShape(12.dp)),
+            ) {
+                CameraPreview(onAvailable = vm::startCamera, onGone = vm::stopCamera)
+                Reticle()
+                if (info?.source == MeterSource.PROCESSED) {
+                    Text(
+                        "APPROX",
+                        Modifier.align(Alignment.TopStart).padding(6.dp)
+                            .background(Color(0x99000000), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 4.dp, vertical = 1.dp),
+                        color = Color.White, fontSize = 10.sp,
+                    )
+                }
+            }
+            Readout(state.reading, shown, state, Modifier.weight(0.58f).padding(start = 14.dp))
+        }
+
+        Row(
+            Modifier.fillMaxWidth().padding(vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Button(onClick = vm::measureOnce, enabled = state.cameraOpen && !state.busy && !state.live) {
+                Text(if (state.measuring && state.task?.running != true) "Measuring…" else "Measure")
+            }
+            FilterChip(
+                selected = state.live,
+                onClick = { vm.setLive(!state.live) },
+                enabled = state.cameraOpen && state.task?.running != true,
+                label = { Text("Live") },
+            )
+            Spacer(Modifier.weight(1f))
+            FilledTonalButton(onClick = { saving = true }, enabled = state.reading != null && !state.live && !state.busy) {
+                Text("Save ref")
+            }
+        }
+        HorizontalDivider()
+
+        Column(
+            Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            ReferencePicker(state.references, state.active, state::corrected, vm::selectReference, vm::deleteReference)
+
+            state.calSession?.let { session ->
+                CalibrationCard(
+                    session, measuring = state.measuring, cameraOpen = state.cameraOpen,
+                    onSelect = vm::selectCalStep, onMeasure = vm::measureCalStep,
+                    onSave = vm::saveCalibration, onCancel = vm::cancelCalibration,
+                )
+            }
+
+            LightCard(state, vm)
+
+            state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            Text(
+                "Fill the box with a white or grey card. " +
+                    (state.calibration?.let { "Meter calibrated (${it.points.size} points)." } ?: "Meter not calibrated.") +
+                    (info?.let { " ${it.description}." } ?: ""),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+
+    if (saving) {
+        SaveDialog(onSave = { vm.saveReference(it); saving = false }, onDismiss = { saving = false })
+    }
+}
+
+@Composable
+private fun Header(state: MeterUiState, vm: MeterViewModel) {
+    var menu by remember { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("Match", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+        LightStatusChip(state.selectedNode?.name?.take(14) ?: "No light", state.lightStatus, onRetry = vm::reconnectLight)
+        Box {
+            IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More") }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(
+                    text = { Text("Calibrate meter with ${state.selectedNode?.name ?: "light"}") },
+                    enabled = state.canRunLightTask,
+                    onClick = { menu = false; vm.startAutoCalibration() },
+                )
+                DropdownMenuItem(
+                    text = { Text("Calibrate manually") },
+                    enabled = !state.busy,
+                    onClick = { menu = false; vm.startCalibration() },
+                )
+                if (state.calibration != null) {
+                    DropdownMenuItem(text = { Text("Clear calibration") }, onClick = { menu = false; vm.clearCalibration() })
+                }
+                DropdownMenuItem(
+                    text = { Text("Test G/M response") },
+                    enabled = state.canRunLightTask,
+                    onClick = { menu = false; vm.startGmTest() },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun Readout(reading: Reading?, shown: CctDuv?, state: MeterUiState, modifier: Modifier) {
+    Column(modifier) {
+        if (reading == null || shown == null) {
+            Text("—", fontSize = 40.sp, fontWeight = FontWeight.SemiBold)
+            Text("Tap Measure or Live", style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            return@Column
+        }
+        Text(formatKelvin(shown.cct), fontSize = 34.sp, fontWeight = FontWeight.SemiBold, lineHeight = 38.sp)
+        Text(formatTint(shown.duv), fontSize = 22.sp)
+        Text(
+            "Duv %+.4f".format(shown.duv) + if (state.calibration == null) " · uncalibrated" else "",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        when (reading.warning) {
+            ExposureWarning.CLIPPED -> Text("Overexposed", color = WarnAmber, style = MaterialTheme.typography.bodySmall)
+            ExposureWarning.TOO_DARK -> Text("Too dark", color = WarnAmber, style = MaterialTheme.typography.bodySmall)
+            ExposureWarning.NONE -> Unit
+        }
+        state.active?.let { ref ->
+            val d = delta(shown, state.corrected(ref.xy))
+            Spacer(Modifier.padding(top = 8.dp))
+            if (d.withinTolerance(MATCH_MIRED, MATCH_DUV)) {
+                Text("Matches ${ref.name}", color = GoodGreen, fontWeight = FontWeight.SemiBold)
+            } else {
+                Text("vs ${ref.name}", style = MaterialTheme.typography.labelMedium)
+                Text(describeTemp(d), style = MaterialTheme.typography.bodySmall)
+                Text(describeTint(d), style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReferencePicker(
+    refs: List<Reference>,
+    active: Reference?,
+    corrected: (Xy) -> CctDuv,
+    onSelect: (String?) -> Unit,
+    onDelete: (String) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    val fmt = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT) }
+    Box {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp))
+                .clickable(enabled = refs.isNotEmpty()) { open = true }
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Reference", style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    when {
+                        active != null -> corrected(active.xy).let { "${active.name} · ${formatKelvin(it.cct)} ${formatTint(it.duv)}" }
+                        refs.isEmpty() -> "Measure the ambient, then Save ref"
+                        else -> "None selected"
+                    },
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+            }
+            if (refs.isNotEmpty()) Icon(Icons.Filled.ArrowDropDown, contentDescription = "Choose reference")
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            refs.forEach { ref ->
+                val c = corrected(ref.xy)
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(ref.name, fontWeight = if (ref.id == active?.id) FontWeight.SemiBold else null)
+                            Text("${formatKelvin(c.cct)} ${formatTint(c.duv)} · ${fmt.format(Date(ref.createdAt))}",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                    },
+                    onClick = { onSelect(ref.id); open = false },
+                    trailingIcon = {
+                        IconButton(onClick = { onDelete(ref.id) }) {
+                            Icon(Icons.Filled.Delete, contentDescription = "Delete ${ref.name}")
+                        }
+                    },
+                )
+            }
+        }
+    }
+}
+
+/** The light: status, brightness, and the Match action with its progress. */
+@Composable
+private fun LightCard(state: MeterUiState, vm: MeterViewModel) {
+    val light = state.light
+    val online = state.lightStatus == LightRig.Status.ONLINE
+    val task = state.task
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    LightPicker(state, vm)
+                    Text(
+                        light?.let {
+                            "${it.brightness?.let { b -> "$b%" } ?: "brightness not set"} · " +
+                                if (it.mode == LightRig.Mode.HSI) "colour: hue ${it.hue}°, sat ${it.sat}%"
+                                else "${formatKelvin(it.cct.toDouble())} · G/M %+d".format(it.gm)
+                        } ?: "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (task?.running == true) {
+                    TextButton(onClick = vm::stopTask) { Text("Stop") }
+                } else {
+                    Button(onClick = vm::startDialIn, enabled = state.canRunLightTask && state.active != null) {
+                        Text("Match")
+                    }
+                }
+            }
+            if (state.lightStatus == LightRig.Status.OFFLINE) {
+                Text(state.lightError ?: "Light offline — switch it on; the app reconnects by itself",
+                    color = WarnAmber, style = MaterialTheme.typography.bodySmall)
+            }
+            BrightnessRow(light?.brightness, enabled = online && task?.running != true, onSet = vm::setLightBrightness)
+            if (light?.brightness == null) {
+                Text("Set brightness first. Matching only changes CCT and G/M.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            task?.let { TaskView(it, onDismiss = vm::dismissTask) }
+        }
+    }
+}
+
+/** Which light Match and calibration use. */
+@Composable
+private fun LightPicker(state: MeterUiState, vm: MeterViewModel) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Row(
+            Modifier.clickable(enabled = state.lights.size > 1 && state.task?.running != true) { open = true },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(state.selectedNode?.name ?: "No lights — add one on the Lights tab", style = MaterialTheme.typography.titleMedium)
+            if (state.lights.size > 1) Icon(Icons.Filled.ArrowDropDown, contentDescription = "Choose light")
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            state.lights.forEach { n ->
+                DropdownMenuItem(
+                    text = { Text("${n.name} · ${n.model.label}") },
+                    onClick = { vm.selectLight(n.unicast); open = false },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TaskView(task: TaskUi, onDismiss: () -> Unit) {
+    var details by remember(task.title) { mutableStateOf(false) }
+    HorizontalDivider(Modifier.padding(vertical = 4.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(task.title, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+        TextButton(onClick = { details = !details }) { Text(if (details) "Hide steps" else "Steps (${task.lines.size})") }
+        if (!task.running) TextButton(onClick = onDismiss) { Text("Clear") }
+    }
+    if (task.running && !details) {
+        task.lines.lastOrNull()?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    }
+    if (details) {
+        task.lines.forEach { Text(it, fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 14.sp) }
+    }
+    task.result?.let {
+        Text(it, color = if (task.success) GoodGreen else WarnAmber, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+/** Brightness slider; sends when the finger lifts. */
+@Composable
+private fun BrightnessRow(brightness: Int?, enabled: Boolean, onSet: (Int) -> Unit) {
+    var value by remember(brightness) { mutableStateOf((brightness ?: 20).toFloat()) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("Brightness", Modifier.width(84.dp), style = MaterialTheme.typography.bodyMedium)
+        Slider(
+            value = value,
+            onValueChange = { value = it },
+            onValueChangeFinished = { onSet(value.roundToInt()) },
+            valueRange = 1f..100f,
+            enabled = enabled,
+            modifier = Modifier.weight(1f),
+        )
+        Text("${value.roundToInt()}%", Modifier.width(48.dp).padding(start = 8.dp))
+    }
+}
+
+@Composable
+private fun CameraPreview(onAvailable: (SurfaceTexture) -> Unit, onGone: () -> Unit) {
+    val context = LocalContext.current
+    val view = remember {
+        TextureView(context).apply {
+            surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) = onAvailable(st)
+                override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) = Unit
+                override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                    onGone()
+                    return true
+                }
+
+                override fun onSurfaceTextureUpdated(st: SurfaceTexture) = Unit
+            }
+        }
+    }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> view.surfaceTexture?.let { if (view.isAvailable) onAvailable(it) }
+                Lifecycle.Event.ON_PAUSE -> onGone()
+                else -> Unit
+            }
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+    AndroidView(factory = { view }, modifier = Modifier.fillMaxSize())
+}
+
+/** Outlines the centre 20% of the frame that the meter samples and meters exposure on. */
+@Composable
+private fun Reticle() {
+    Canvas(Modifier.fillMaxSize()) {
+        val w = size.width * 0.2f
+        val h = size.height * 0.2f
+        drawRect(
+            Color.White,
+            topLeft = Offset((size.width - w) / 2, (size.height - h) / 2),
+            size = Size(w, h),
+            style = Stroke(width = 2.dp.toPx()),
+        )
+    }
+}
+
+@Composable
+private fun CalibrationCard(
+    session: CalSession,
+    measuring: Boolean,
+    cameraOpen: Boolean,
+    onSelect: (Int) -> Unit,
+    onMeasure: () -> Unit,
+    onSave: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Calibrate manually", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Use one trusted light at G/M 0 as the only light on the card. Keep the phone, card and " +
+                    "distance the same for every step. Tap a step to redo it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            CALIBRATION_TARGETS.forEachIndexed { i, k ->
+                val r = session.readings[i]
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(
+                            if (i == session.index) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+                            RoundedCornerShape(6.dp),
+                        )
+                        .clickable { onSelect(i) }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                ) {
+                    Text("Set ${formatKelvin(k)}, G/M 0", Modifier.weight(1f))
+                    Text(r?.let { "read ${formatKelvin(it.cct)} ${formatTint(it.duv)}" } ?: "—",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            session.error?.let { Text(it, color = WarnAmber) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = onMeasure, enabled = cameraOpen && !measuring) {
+                    Text(if (measuring) "Measuring…" else "Measure ${formatKelvin(CALIBRATION_TARGETS[session.index])}")
+                }
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = onCancel) { Text("Cancel") }
+                FilledTonalButton(onClick = onSave, enabled = session.complete && !measuring) { Text("Save") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SaveDialog(onSave: (String) -> Unit, onDismiss: () -> Unit) {
+    val default = remember { "Ambient " + DateFormat.getTimeInstance(DateFormat.SHORT).format(Date()) }
+    var name by rememberSaveable { mutableStateOf(default) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Save reference") },
+        text = { OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true) },
+        confirmButton = { TextButton(onClick = { onSave(name) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+private fun describeTemp(d: Delta): String {
+    val k = abs(d.kelvin).toInt()
+    return when {
+        abs(d.mired) <= MATCH_MIRED -> "CCT ✓"
+        d.mired > 0 -> "$k K warmer"
+        else -> "$k K cooler"
+    }
+}
+
+private fun describeTint(d: Delta): String {
+    val t = abs(d.duv) * 1000
+    return when {
+        abs(d.duv) <= MATCH_DUV -> "Tint ✓"
+        d.duv > 0 -> "%.1f greener".format(t)
+        else -> "%.1f more magenta".format(t)
+    }
+}
