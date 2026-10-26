@@ -2,6 +2,7 @@ package app.lightset.color
 
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.abs
 
 /** One calibration step: what a trusted light was set to, and what the sensor model read. */
 data class CalPoint(val targetKelvin: Double, val measured: CctDuv)
@@ -12,8 +13,15 @@ data class CalPoint(val targetKelvin: Double, val measured: CctDuv)
  * tungsten end, but they are smooth and monotonic, so a piecewise-linear correction
  * in mired space fixes CCT, and an offset per mired fixes tint (G/M 0 → Duv 0).
  * Outside the calibrated span the end segments are extrapolated.
+ *
+ * [createdAt] and [source] (the light it was made with, or "manual") are shown so it's
+ * clear which calibration is in use.
  */
-class Calibration(points: List<CalPoint>) {
+class Calibration(
+    points: List<CalPoint>,
+    val createdAt: Long = System.currentTimeMillis(),
+    val source: String? = null,
+) {
     val points: List<CalPoint> = points.sortedBy { it.measured.mired }
 
     private val measuredM = this.points.map { it.measured.mired }
@@ -34,19 +42,33 @@ class Calibration(points: List<CalPoint>) {
         return CctDuv(1e6 / m, raw.duv - interpolate(raw.mired, measuredM, duvOffset))
     }
 
-    fun toJson(): String = JSONArray().apply {
-        points.forEach {
-            put(JSONObject().put("target", it.targetKelvin).put("cct", it.measured.cct).put("duv", it.measured.duv))
-        }
-    }.toString()
+    /** Largest mired error this calibration makes on another set of readings. */
+    fun worstError(readings: List<CalPoint>): Double =
+        readings.maxOf { abs(apply(it.measured).mired - mired(it.targetKelvin)) }
+
+    fun toJson(): String = JSONObject()
+        .put("points", JSONArray().apply {
+            points.forEach {
+                put(JSONObject().put("target", it.targetKelvin).put("cct", it.measured.cct).put("duv", it.measured.duv))
+            }
+        })
+        .put("createdAt", createdAt)
+        .put("source", source)
+        .toString()
 
     companion object {
         fun fromJson(s: String): Calibration {
-            val arr = JSONArray(s)
-            return Calibration((0 until arr.length()).map {
-                val o = arr.getJSONObject(it)
-                CalPoint(o.getDouble("target"), CctDuv(o.getDouble("cct"), o.getDouble("duv")))
-            })
+            // Older versions stored just the array of points.
+            val o = if (s.trimStart().startsWith("[")) JSONObject().put("points", JSONArray(s)) else JSONObject(s)
+            val arr = o.getJSONArray("points")
+            return Calibration(
+                (0 until arr.length()).map {
+                    val p = arr.getJSONObject(it)
+                    CalPoint(p.getDouble("target"), CctDuv(p.getDouble("cct"), p.getDouble("duv")))
+                },
+                createdAt = o.optLong("createdAt", 0L),
+                source = if (o.has("source")) o.getString("source") else null,
+            )
         }
 
         /** Linear interpolation over ascending [xs], extrapolating from the end segments. */

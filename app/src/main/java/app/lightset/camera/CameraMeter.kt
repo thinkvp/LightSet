@@ -41,7 +41,9 @@ import java.nio.ByteOrder
 import java.util.concurrent.Executor
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.math.log2
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 /**
  * Reads the colour of the light falling on a white/grey card at the centre of the
@@ -80,6 +82,11 @@ class CameraMeter(context: Context) {
 
     /** While locked, exposure stays fixed so samples can be compared or subtracted. */
     private var aeLocked = false
+
+    /** Width and height of the sampled centre box, as a fraction of the frame. */
+    @Volatile
+    var patch = DEFAULT_PATCH
+        private set
 
     /** Mean linear camera RGB of the centre patch (sensor-native for RAW). */
     class Sample(val rgb: DoubleArray, val level: Double, val warning: ExposureWarning)
@@ -153,31 +160,47 @@ class CameraMeter(context: Context) {
     }
 
     /**
-     * Average [frames] captures of the centre patch into one reading. If the patch clips
-     * or is too dark, exposure compensation is stepped by 1 EV and the reading retaken.
+     * Average [frames] captures of the centre patch into one reading. Unless exposure is
+     * locked, a patch that clips or sits outside [LOW_LEVEL]..[HIGH_LEVEL] gets exposure
+     * compensation moved straight to what should put it at [TARGET_LEVEL], and the
+     * reading is retaken. RAW is linear, so the change needed is log2(target / level).
      */
     suspend fun measure(frames: Int = 3): Reading = lock.withLock {
         var r = measureLocked(frames)
         if (aeLocked) return@withLock r
         val range = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
         val step = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toDouble() ?: return@withLock r
-        val oneEv = (1 / step).toInt().coerceAtLeast(1)
         repeat(4) {
-            val dir = when (r.warning) {
-                ExposureWarning.CLIPPED -> -1
-                ExposureWarning.TOO_DARK -> 1
-                ExposureWarning.NONE -> return@withLock r
+            val ev = when {
+                // A clipped patch understates its level; step well down and look again.
+                r.warning == ExposureWarning.CLIPPED -> -2.0
+                r.level < LOW_LEVEL || r.level > HIGH_LEVEL ->
+                    log2(TARGET_LEVEL / r.level.coerceAtLeast(1e-4)).coerceIn(-4.0, 4.0)
+                else -> return@withLock r
             }
-            val next = (evSteps + dir * oneEv).let { e -> range?.let { e.coerceIn(it.lower, it.upper) } ?: e }
+            val next = (evSteps + (ev / step).roundToInt()).let { e -> range?.let { e.coerceIn(it.lower, it.upper) } ?: e }
             if (next == evSteps) return@withLock r
-            evSteps = next
-            Log.d(TAG, "exposure ${if (dir < 0) "down" else "up"}: compensation now %.1f EV".format(evSteps * step))
-            val s = checkNotNull(session)
-            s.setRepeatingRequest(baseRequest(checkNotNull(device), checkNotNull(previewSurface)).build(), null, handler)
-            kotlinx.coroutines.delay(700)
+            val prev = evSteps
+            val before = r
+            applyEv(next)
+            Log.d(TAG, "exposure %+.1f EV for level %.3f: compensation now %.1f EV".format(ev, before.level, evSteps * step))
             r = measureLocked(frames)
+            // At its exposure limit the camera ignores more compensation; undo it rather
+            // than leave it raised to clip the next bright scene.
+            if (next > prev && r.warning != ExposureWarning.CLIPPED && r.level < before.level * 1.2) {
+                applyEv(prev)
+                Log.d(TAG, "exposure at its limit; compensation back to %.1f EV".format(evSteps * step))
+                return@withLock before
+            }
         }
         r
+    }
+
+    private suspend fun applyEv(steps: Int) {
+        evSteps = steps
+        val s = checkNotNull(session)
+        s.setRepeatingRequest(baseRequest(checkNotNull(device), checkNotNull(previewSurface)).build(), null, handler)
+        kotlinx.coroutines.delay(700)
     }
 
     /** Locks or unlocks auto-exposure at its current values. */
@@ -186,6 +209,13 @@ class CameraMeter(context: Context) {
         val s = session ?: return@withLock
         s.setRepeatingRequest(baseRequest(checkNotNull(device), checkNotNull(previewSurface)).build(), null, handler)
         Log.d(TAG, "exposure ${if (locked) "locked" else "unlocked"}")
+    }
+
+    /** Resizes the sampled box; exposure is metered on the new box from now on. */
+    suspend fun setPatch(fraction: Float) = lock.withLock {
+        patch = fraction.coerceIn(MIN_PATCH, MAX_PATCH)
+        val s = session ?: return@withLock
+        s.setRepeatingRequest(baseRequest(checkNotNull(device), checkNotNull(previewSurface)).build(), null, handler)
     }
 
     /** Raw patch sample, for subtracting one light condition from another. */
@@ -276,8 +306,8 @@ class CameraMeter(context: Context) {
             // card against a dark room isn't blown out.
             if ((chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0) > 0) {
                 chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)?.let { a ->
-                    val w = a.width() / 5
-                    val h = a.height() / 5
+                    val w = (a.width() * patch).toInt()
+                    val h = (a.height() * patch).toInt()
                     set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(
                         MeteringRectangle(a.left + (a.width() - w) / 2, a.top + (a.height() - h) / 2, w, h,
                             MeteringRectangle.METERING_WEIGHT_MAX)
@@ -347,10 +377,12 @@ class CameraMeter(context: Context) {
 
         val w = image.width
         val h = image.height
-        val x0 = (w * 0.4).toInt() and 1.inv()
-        val x1 = (w * 0.6).toInt() and 1.inv()
-        val y0 = (h * 0.4).toInt() and 1.inv()
-        val y1 = (h * 0.6).toInt() and 1.inv()
+        val lo = 0.5 - patch / 2
+        val hi = 0.5 + patch / 2
+        val x0 = (w * lo).toInt() and 1.inv()
+        val x1 = (w * hi).toInt() and 1.inv()
+        val y0 = (h * lo).toInt() and 1.inv()
+        val y1 = (h * hi).toInt() and 1.inv()
         // Sample roughly 200×200 CFA blocks regardless of sensor resolution.
         val step = max(2, ((x1 - x0) / 200) and 1.inv())
 
@@ -400,10 +432,14 @@ class CameraMeter(context: Context) {
         val vBuf = vP.buffer
         val w = image.width
         val h = image.height
-        val x0 = (w * 0.4).toInt() and 1.inv()
-        val x1 = (w * 0.6).toInt()
-        val y0 = (h * 0.4).toInt() and 1.inv()
-        val y1 = (h * 0.6).toInt()
+        val lo = 0.5 - patch / 2
+        val hi = 0.5 + patch / 2
+        val x0 = (w * lo).toInt() and 1.inv()
+        val x1 = (w * hi).toInt()
+        val y0 = (h * lo).toInt() and 1.inv()
+        val y1 = (h * hi).toInt()
+        // Big boxes cover many pixels; every other row and column is plenty.
+        val step = if (patch > 0.4f) 4 else 2
 
         val sum = DoubleArray(3)
         var n = 0
@@ -429,9 +465,9 @@ class CameraMeter(context: Context) {
                     sum[i] += ProcessedColorModel.srgbToLinear(c / 255.0)
                 }
                 n++
-                x += 2
+                x += step
             }
-            y += 2
+            y += step
         }
         val mean = DoubleArray(3) { sum[it] / n }
         return Patch(mean, mean.max(), clippedSamples > n * 3 / 50)
@@ -471,6 +507,14 @@ class CameraMeter(context: Context) {
 
     companion object {
         private const val TAG = "LightSet"
+        const val DEFAULT_PATCH = 0.2f
+        const val MIN_PATCH = 0.06f
+        const val MAX_PATCH = 0.8f
+
+        /** Brightest-channel level (fraction of full scale) exposure aims for, and the band left alone. */
+        private const val TARGET_LEVEL = 0.45
+        private const val LOW_LEVEL = 0.15
+        private const val HIGH_LEVEL = 0.85
 
         private fun rawUsable(c: CameraCharacteristics): Boolean {
             val caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: return false

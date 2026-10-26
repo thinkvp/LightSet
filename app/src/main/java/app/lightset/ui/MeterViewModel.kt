@@ -38,6 +38,10 @@ private const val DIAL_MAX_STEPS = 8
 private const val SETTLE_MS = 900L
 
 private const val KEY_SELECTED = "selected_light"
+private const val KEY_PATCH = "patch"
+
+/** Below this share of the card's light, a calibration reading is flagged. */
+private const val GOOD_SHARE = 0.5
 
 /** Colour temps a trusted light is set to during calibration, at G/M 0. */
 val CALIBRATION_TARGETS = listOf(2700.0, 3200.0, 4300.0, 5600.0, 6500.0)
@@ -50,6 +54,9 @@ data class CalSession(
 ) {
     val complete: Boolean get() = readings.all { it != null }
 }
+
+/** A new calibration waiting for the user to save or discard it. */
+data class CalReview(val calibration: Calibration, val warnings: List<String> = emptyList())
 
 /** A running or finished light task (dial-in, auto-calibration, G/M test). */
 data class TaskUi(
@@ -70,7 +77,12 @@ data class MeterUiState(
     val live: Boolean = false,
     val error: String? = null,
     val calibration: Calibration? = null,
+    /** The calibration last replaced or cleared, for undo. */
+    val previousCalibration: Calibration? = null,
     val calSession: CalSession? = null,
+    val calReview: CalReview? = null,
+    /** Sampled box size, as a fraction of the frame. */
+    val patch: Float = CameraMeter.DEFAULT_PATCH,
     val task: TaskUi? = null,
     /** Lights in the network, and the one used for matching and calibration. */
     val lights: List<MeshNode> = emptyList(),
@@ -100,7 +112,12 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private val rig = (app as LightSetApp).rig
 
     private val _state = MutableStateFlow(
-        MeterUiState(references = store.load(), activeId = store.activeId, calibration = store.calibration)
+        MeterUiState(
+            references = store.load(),
+            activeId = store.activeId,
+            calibration = store.calibration,
+            previousCalibration = store.previousCalibration,
+        )
     )
     val state: StateFlow<MeterUiState> = _state
 
@@ -126,6 +143,10 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         viewModelScope.launch { rig.lastError.collect { e -> _state.update { it.copy(lightError = e) } } }
+        prefs.getFloat(KEY_PATCH, CameraMeter.DEFAULT_PATCH).let { p ->
+            _state.update { it.copy(patch = p) }
+            viewModelScope.launch { meter.setPatch(p) }
+        }
     }
 
     private class SelectedLight(
@@ -141,6 +162,17 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private fun target(): Int? = _state.value.selected
 
     // --- Camera and readings -------------------------------------------------
+
+    /** Resizes the box while dragging; the meter switches to it on [commitPatch]. */
+    fun dragPatch(delta: Float) = _state.update {
+        it.copy(patch = (it.patch + delta).coerceIn(CameraMeter.MIN_PATCH, CameraMeter.MAX_PATCH))
+    }
+
+    fun commitPatch() {
+        val p = _state.value.patch
+        prefs.edit().putFloat(KEY_PATCH, p).apply()
+        viewModelScope.launch { runCatching { meter.setPatch(p) } }
+    }
 
     fun cameraInfo(): CameraMeter.Info? = runCatching { meter.probe() }
         .onSuccess { info -> _state.update { it.copy(cameraInfo = info) } }
@@ -290,21 +322,41 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun saveCalibration() {
+    /** Finishes manual calibration; the result still has to be reviewed and saved. */
+    fun finishManualCalibration() {
         val session = _state.value.calSession ?: return
         val points = CALIBRATION_TARGETS.zip(session.readings).mapNotNull { (k, r) -> r?.let { CalPoint(k, it) } }
         try {
-            val cal = Calibration(points)
-            store.calibration = cal
-            _state.update { it.copy(calibration = cal, calSession = null) }
+            val cal = Calibration(points, source = "manual")
+            _state.update { it.copy(calSession = null, calReview = CalReview(cal)) }
         } catch (e: IllegalArgumentException) {
             _state.update { it.copy(calSession = session.copy(error = e.message)) }
         }
     }
 
-    fun clearCalibration() {
-        store.calibration = null
-        _state.update { it.copy(calibration = null) }
+    /** Saves the reviewed calibration; the one it replaces is kept for undo. */
+    fun saveReviewedCalibration() {
+        val cal = _state.value.calReview?.calibration ?: return
+        replaceCalibration(cal)
+        _state.update { it.copy(calReview = null) }
+    }
+
+    fun discardReviewedCalibration() = _state.update { it.copy(calReview = null) }
+
+    /** Clears the calibration; it can still be restored. */
+    fun clearCalibration() = replaceCalibration(null)
+
+    /** Swaps back to the calibration in use before the last save or clear. */
+    fun restorePreviousCalibration() {
+        val prev = _state.value.previousCalibration ?: return
+        replaceCalibration(prev)
+    }
+
+    private fun replaceCalibration(cal: Calibration?) {
+        val old = _state.value.calibration
+        store.calibration = cal
+        store.previousCalibration = old
+        _state.update { it.copy(calibration = cal, previousCalibration = old) }
     }
 
     // --- Light tasks ---------------------------------------------------------
@@ -350,23 +402,31 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     fun startAutoCalibration() {
         val start = _state.value.light ?: return
         val node = _state.value.selectedNode ?: return
+        _state.update { it.copy(calReview = null) }
         runTask("Calibrating meter with ${node.name}") {
             line("Hold the card in the light; it will step through ${CALIBRATION_TARGETS.size} colour temps")
             val ambient = lockAndReadAmbient(node.unicast, LightSetting(5600, 0)) ?: return@runTask
             val points = mutableListOf<CalPoint>()
+            var minShare = 1.0
             for (k in CALIBRATION_TARGETS) {
                 rig.apply(node.unicast, LightSetting(k.toInt(), 0))
                 delay(SETTLE_MS + 300)
                 val m = readLight(ambient, calibrated = false) ?: return@runTask
                 points += CalPoint(k, m.first)
-                line("%,d K → read %s".format(k.toInt(), fmt(m.first)))
+                minShare = minOf(minShare, m.second)
+                line("%,d K → read %s  (light %.0f%% of the card)".format(k.toInt(), fmt(m.first), m.second * 100))
             }
             rig.set(node.unicast, start)
             try {
-                val cal = Calibration(points)
-                store.calibration = cal
-                _state.update { it.copy(calibration = cal) }
-                finish(true, "Meter calibrated (${points.size} points). ${node.name} restored")
+                val cal = Calibration(points, source = node.name)
+                // Ambient is subtracted, but its noise isn't: the more of the card's
+                // light comes from the room, the less the readings can be trusted.
+                val warnings = if (minShare < GOOD_SHARE) listOf(
+                    "Room light was up to %.0f%% of the card. Brighter light or a darker room gives a cleaner result."
+                        .format((1 - minShare) * 100)
+                ) else emptyList()
+                _state.update { it.copy(calReview = CalReview(cal, warnings)) }
+                finish(true, "Done, ${node.name} restored. Review the new calibration to save it")
             } catch (e: IllegalArgumentException) {
                 finish(false, e.message ?: "Calibration readings were inconsistent")
             }

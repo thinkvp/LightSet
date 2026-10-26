@@ -72,9 +72,10 @@ fun LightsScreen(vm: LightsViewModel) {
                 }
             }
         }
-        if (state.status == LightRig.Status.OFFLINE && state.lights.isNotEmpty()) {
+        // Only problems the user can fix (e.g. Bluetooth off); per-light status is the dot.
+        if (state.status == LightRig.Status.OFFLINE && state.lights.isNotEmpty() && state.statusError != null) {
             Text(
-                (state.statusError ?: "Not connected") + " · tap to retry",
+                state.statusError + " · tap to retry",
                 Modifier.clickable(onClick = vm::reconnect),
                 style = MaterialTheme.typography.bodySmall, color = WarnAmber,
             )
@@ -108,9 +109,7 @@ private fun LightControlCard(node: MeshNode, state: LightsUiState, vm: LightsVie
     val limits = node.model.limits
     val cctRange = limits.cctMin..limits.cctMax
     val status = lightStatus(node, state)
-    // Controls work whenever we're connected to the network: some lights act on
-    // settings but never answer the status check.
-    val online = state.status == LightRig.Status.ONLINE
+    val online = status == LightRig.Status.ONLINE
     val l = state.states[node.unicast] ?: LightRig.LightState(null, 5600, 0)
     val brightness = l.brightness ?: 20
     val hsi = l.mode == LightRig.Mode.HSI && node.model.rgb
@@ -160,10 +159,6 @@ private fun LightControlCard(node: MeshNode, state: LightsUiState, vm: LightsVie
             }
             state.notice?.takeIf { it.first == node.unicast }?.let {
                 Text(it.second, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-            }
-            if (status == LightRig.Status.OFFLINE && state.status == LightRig.Status.ONLINE) {
-                Text("No reply from this light — it may be off or out of range. If it's on, try ⋮ → Set up again",
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (!expanded) return@Column
             Column(Modifier.padding(end = 12.dp)) {

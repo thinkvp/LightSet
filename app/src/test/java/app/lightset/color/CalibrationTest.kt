@@ -61,5 +61,19 @@ class CalibrationTest {
         val raw = CctDuv(4400.0, 0.002)
         assertEquals(cal.apply(raw).cct, back.apply(raw).cct, 1e-9)
         assertEquals(cal.apply(raw).duv, back.apply(raw).duv, 1e-12)
+        assertEquals(cal.createdAt, back.createdAt)
+    }
+
+    @Test
+    fun readsOldArrayFormat() {
+        val old = """[{"target":2700,"cct":3500,"duv":0.003},{"target":6500,"cct":6150,"duv":-0.001}]"""
+        val c = Calibration.fromJson(old)
+        assertEquals(2, c.points.size)
+        assertEquals(null, c.source)
+    }
+
+    @Test
+    fun worstErrorAgainstOwnPointsIsZero() {
+        assertEquals(0.0, cal.worstError(cal.points), 1e-9)
     }
 }

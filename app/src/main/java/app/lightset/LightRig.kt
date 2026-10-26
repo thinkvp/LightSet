@@ -4,6 +4,11 @@ import android.annotation.SuppressLint
 import android.app.Application
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
+import android.os.ParcelUuid
 import android.util.Log
 import app.lightset.ble.NanliteProtocol
 import app.lightset.color.LightSetting
@@ -12,6 +17,7 @@ import app.lightset.mesh.MeshNode
 import app.lightset.mesh.MeshStore
 import app.lightset.mesh.NanliteMeshLink
 import app.lightset.mesh.Provisioner
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,6 +27,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.ConcurrentHashMap
 
 class LightSetApp : Application() {
     val rig by lazy { LightRig(this) }
@@ -59,6 +66,12 @@ class LightRig(private val app: Application) {
     private val prefs = app.getSharedPreferences("rig", android.content.Context.MODE_PRIVATE)
     private var link: NanliteMeshLink? = null
     private var proxyAddress: String? = prefs.getString(KEY_PROXY, null)
+
+    /** The light whose connection just dropped (likely switched off); tried last. */
+    private var droppedAddress: String? = null
+
+    /** Wakes [keepConnected] as soon as the connection drops. */
+    private val wake = Channel<Unit>(Channel.CONFLATED)
 
     private val _log = MutableSharedFlow<String>(extraBufferCapacity = 64)
     val log: SharedFlow<String> = _log
@@ -107,7 +120,7 @@ class LightRig(private val app: Application) {
                 pingAll()
                 lastPing = System.currentTimeMillis()
             }
-            delay(if (connected) 2000 else 6000)
+            withTimeoutOrNull(if (connected) 2000L else 6000L) { wake.receive() }
         }
     }
 
@@ -133,21 +146,31 @@ class LightRig(private val app: Application) {
             _lastError.value = e.message
             throw e
         }
-        // Try the light that worked last time first, then the others.
+        // Lights that are switched on advertise the proxy service: try those first
+        // (nearest first, the last one used ahead), then the rest, and the one that
+        // just dropped last of all.
+        val seen = scanProxies(_nodes.value.map { it.address }.toSet())
         val candidates = _nodes.value.map { it.address }.distinct()
-            .sortedByDescending { it == proxyAddress }
+            .sortedWith(compareBy<String> { it == droppedAddress }
+                .thenBy { it !in seen }
+                .thenBy { it != proxyAddress }
+                .thenByDescending { seen[it] ?: Int.MIN_VALUE })
+        if (seen.isNotEmpty()) log("Advertising: ${seen.entries.joinToString { "${it.key} ${it.value} dBm" }}")
         var failure: Throwable? = null
         for (address in candidates) {
             val l = NanliteMeshLink(app, mesh.netKey, mesh.ivIndex, mesh.ourAddress, DEFAULT_KEYS, ::log,
                 onDisconnect = {
                     _status.value = Status.OFFLINE
                     _reachable.value = emptySet()
+                    droppedAddress = address
+                    wake.trySend(Unit)
                 },
                 deviceKeys = { u -> deviceKey(u) })
             try {
                 l.connect(adapter!!.getRemoteDevice(address))
                 link = l
                 sentMode.clear()
+                droppedAddress = null
                 proxyAddress = address
                 prefs.edit().putString(KEY_PROXY, address).apply()
                 _nodes.value.firstOrNull { it.address == address }?.let { n -> _reachable.update { it + n.unicast } }
@@ -164,6 +187,33 @@ class LightRig(private val app: Application) {
             if (candidates.size == 1) "Light not found — is it on?" else "No lights found — are they on?"
         } else failure?.message
         throw failure ?: IllegalStateException("Couldn't connect")
+    }
+
+    /**
+     * Scans briefly for our lights' proxy adverts. Returns address → RSSI; stops early
+     * once every light has been seen. Empty if scanning isn't possible.
+     */
+    private suspend fun scanProxies(addresses: Set<String>): Map<String, Int> {
+        val scanner = app.getSystemService(BluetoothManager::class.java)?.adapter?.bluetoothLeScanner
+            ?: return emptyMap()
+        val seen = ConcurrentHashMap<String, Int>()
+        val callback = object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
+                val a = result.device.address
+                if (a in addresses) seen[a] = result.rssi
+            }
+        }
+        val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid.fromString(PROXY_UUID)).build()
+        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+        if (runCatching { scanner.startScan(listOf(filter), settings, callback) }.isFailure) return emptyMap()
+        try {
+            withTimeoutOrNull(SCAN_MS) {
+                while (seen.size < addresses.size) delay(100)
+            }
+        } finally {
+            runCatching { scanner.stopScan(callback) }
+        }
+        return seen.toMap()
     }
 
     fun disconnect() {
@@ -384,6 +434,8 @@ class LightRig(private val app: Application) {
         const val KEY_PROXY = "proxy_address"
         const val WRITE_GAP_MS = 60L
         const val PING_INTERVAL_MS = 10_000L
+        const val SCAN_MS = 1500L
+        const val PROXY_UUID = "00001828-0000-1000-8000-00805f9b34fb"
         val DEFAULT_KEYS = linkedMapOf("default" to NanliteMeshLink.NANLITE_DEFAULT_APP_KEY)
     }
 }

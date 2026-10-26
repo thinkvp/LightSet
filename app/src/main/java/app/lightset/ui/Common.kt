@@ -1,5 +1,6 @@
 package app.lightset.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -35,9 +36,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -229,4 +235,60 @@ fun sliderToCct(v: Float, range: IntRange): Int {
     val cool = 1e6 / range.last
     val k = 1e6 / (warm - v * (warm - cool))
     return (k / 10).roundToInt() * 10
+}
+
+/** [kelvinColor] pulled toward green or magenta by [duv], to show a reading's tint. */
+fun tintedColor(cct: Double, duv: Double): Color {
+    val base = kelvinColor(cct.roundToInt())
+    val toward = if (duv > 0) Color(0xFF4CAF50) else Color(0xFFD040D0)
+    return lerp(base, toward, (abs(duv) * 25).toFloat().coerceAtMost(0.6f))
+}
+
+/** Track for showing tint (Duv) from [TINT_SPAN] magenta to [TINT_SPAN] green. */
+val tintTrack: Brush = Brush.horizontalGradient(listOf(Color(0xFFD45FD4), Color(0xFFEEEEEE), Color(0xFF5FBF5F)))
+const val TINT_SPAN = 0.02
+
+/** Where [duv] sits on [tintTrack], 0..1. */
+fun tintPosition(duv: Double): Float = ((duv / TINT_SPAN + 1) / 2).toFloat().coerceIn(0f, 1f)
+
+/**
+ * A colour bar with a reading on it as a ringed dot, and optionally a reference as a
+ * notch above the bar, so how far apart they are reads at a glance.
+ */
+@Composable
+fun ColourGauge(track: Brush, value: Float?, reference: Float?, modifier: Modifier = Modifier) {
+    val notch = MaterialTheme.colorScheme.onSurface
+    Canvas(modifier.fillMaxWidth().height(22.dp)) {
+        val barH = 8.dp.toPx()
+        val cy = 14.dp.toPx()
+        drawRoundRect(track, topLeft = Offset(0f, cy - barH / 2), size = Size(size.width, barH),
+            cornerRadius = CornerRadius(barH / 2))
+        reference?.let { r ->
+            val x = r.coerceIn(0f, 1f) * size.width
+            val half = 5.dp.toPx()
+            drawPath(Path().apply {
+                moveTo(x - half, 0f)
+                lineTo(x + half, 0f)
+                lineTo(x, cy - barH / 2)
+                close()
+            }, notch)
+        }
+        value?.let { v ->
+            val c = Offset(v.coerceIn(0f, 1f) * size.width, cy)
+            drawCircle(Color(0x99000000), radius = 7.dp.toPx(), center = c)
+            drawCircle(Color.White, radius = 5.dp.toPx(), center = c)
+        }
+    }
+}
+
+/** A small rounded label filled with [color]. */
+@Composable
+fun Pill(text: String, color: Color, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        modifier.background(color, RoundedCornerShape(50)).padding(horizontal = 8.dp, vertical = 2.dp),
+        fontSize = 12.sp,
+        maxLines = 1,
+        color = if (color.luminance() > 0.4f) Color.Black else Color.White,
+    )
 }

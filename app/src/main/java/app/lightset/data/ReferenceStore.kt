@@ -69,12 +69,21 @@ class ReferenceStore(context: Context) {
         set(value) = prefs.edit().putString(KEY_ACTIVE, value).apply()
 
     var calibration: Calibration?
-        get() = prefs.getString(KEY_CALIBRATION, null)?.let { runCatching { Calibration.fromJson(it) }.getOrNull() }
+        get() = read(KEY_CALIBRATION)
         set(value) = prefs.edit().putString(KEY_CALIBRATION, value?.toJson()).apply()
+
+    /** The calibration replaced or cleared last, so it can be restored. */
+    var previousCalibration: Calibration?
+        get() = read(KEY_PREVIOUS)
+        set(value) = prefs.edit().putString(KEY_PREVIOUS, value?.toJson()).apply()
+
+    private fun read(key: String) =
+        prefs.getString(key, null)?.let { runCatching { Calibration.fromJson(it) }.getOrNull() }
 
     private companion object {
         const val KEY_LIST = "list"
         const val KEY_ACTIVE = "active"
         const val KEY_CALIBRATION = "calibration"
+        const val KEY_PREVIOUS = "calibration_previous"
     }
 }
