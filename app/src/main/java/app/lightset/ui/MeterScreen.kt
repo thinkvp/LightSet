@@ -641,6 +641,9 @@ private fun CalibrationReview(review: CalReview, current: Calibration?, vm: Mete
                 if (current != null) {
                     Text("Current", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = muted)
                 }
+                if (review.settle.isNotEmpty()) {
+                    Text("Spread", Modifier.weight(0.9f), style = MaterialTheme.typography.labelSmall, color = muted)
+                }
             }
             cal.points.sortedBy { it.targetKelvin }.forEach { p ->
                 Row(verticalAlignment = Alignment.Top) {
@@ -650,7 +653,18 @@ private fun CalibrationReview(review: CalReview, current: Calibration?, vm: Mete
                         val old = current.points.firstOrNull { it.targetKelvin == p.targetKelvin }?.measured
                         if (old != null) ReadingCell(old, Modifier.weight(1f)) else Text("—", Modifier.weight(1f))
                     }
+                    if (review.settle.isNotEmpty()) {
+                        val s = review.settle[p.targetKelvin]
+                        if (s != null) SettleCell(s, Modifier.weight(0.9f)) else Text("—", Modifier.weight(0.9f))
+                    }
                 }
+            }
+            if (review.settle.isNotEmpty()) {
+                Text(
+                    "Spread: how much the last two readings differed (mired over tint) and how long the light took to settle",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = muted,
+                )
             }
             current?.let { cur ->
                 Text(
@@ -677,6 +691,20 @@ private fun ReadingCell(c: CctDuv, modifier: Modifier) {
     Column(modifier) {
         Text(formatKelvin(c.cct), style = MaterialTheme.typography.bodyMedium)
         Text(formatTint(c.duv), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** How a calibration reading settled: mired and tint spread, then the time taken, amber if it never settled. */
+@Composable
+private fun SettleCell(s: Settle, modifier: Modifier) {
+    val color = if (s.settled) MaterialTheme.colorScheme.onSurface else WarnAmber
+    Column(modifier) {
+        Text("±%.1f · ±%.1f".format(s.spread.mired, s.spread.duv * 1000), style = MaterialTheme.typography.bodyMedium, color = color)
+        Text(
+            if (s.settled) "%.1f s".format(s.ms / 1000.0) else "still changing",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (s.settled) MaterialTheme.colorScheme.onSurfaceVariant else WarnAmber,
+        )
     }
 }
 

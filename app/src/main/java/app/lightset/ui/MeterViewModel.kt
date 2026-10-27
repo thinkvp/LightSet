@@ -2,6 +2,7 @@ package app.lightset.ui
 
 import android.app.Application
 import android.graphics.SurfaceTexture
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.lightset.LightRig
@@ -17,9 +18,12 @@ import app.lightset.color.CctDuv
 import app.lightset.color.DialIn
 import app.lightset.color.LightLimits
 import app.lightset.color.LightSetting
+import app.lightset.color.Spread
 import app.lightset.color.Xy
+import app.lightset.color.ambientSettled
 import app.lightset.color.cctDuv
 import app.lightset.color.delta
+import app.lightset.color.mean
 import app.lightset.data.Reference
 import app.lightset.data.ReferenceStore
 import app.lightset.mesh.MeshNode
@@ -34,8 +38,12 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 private const val DIAL_MAX_STEPS = 8
-/** Time for the light to change and the camera's exposure to settle. */
+/** Time for auto-exposure to settle on the lit card before it's locked. */
 private const val SETTLE_MS = 900L
+/** Minimum wait after changing a light before the first reading. */
+private const val MIN_SETTLE_MS = 300L
+/** Longest wait for consecutive readings to agree; after that the last pair is used. */
+private const val SETTLE_TIMEOUT_MS = 5000L
 
 private const val KEY_SELECTED = "selected_light"
 private const val KEY_PATCH = "patch"
@@ -55,8 +63,21 @@ data class CalSession(
     val complete: Boolean get() = readings.all { it != null }
 }
 
-/** A new calibration waiting for the user to save or discard it. */
-data class CalReview(val calibration: Calibration, val warnings: List<String> = emptyList())
+/**
+ * How a light reading settled: the [spread] between the last two readings, whether
+ * they agreed before the timeout, and how long it took after the light was changed.
+ */
+data class Settle(val spread: Spread, val settled: Boolean, val ms: Long)
+
+/** A new calibration waiting for the user to save or discard it, with how each auto reading settled. */
+data class CalReview(
+    val calibration: Calibration,
+    val warnings: List<String> = emptyList(),
+    val settle: Map<Double, Settle> = emptyMap(),
+)
+
+/** A light reading with ambient subtracted, and the light's share of the card. */
+private class LightRead(val c: CctDuv, val share: Double, val settle: Settle)
 
 /** A running or finished light task (dial-in, auto-calibration, G/M test). */
 data class TaskUi(
@@ -406,12 +427,11 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             line("Target ${fmt(target)} · brightness $brightness%")
             val ambient = lockAndReadAmbient(node.unicast, setting) ?: return@runTask
             for (i in 1..DIAL_MAX_STEPS) {
-                delay(SETTLE_MS)
                 val m = readLight(ambient) ?: return@runTask
-                val dd = delta(m.first, target)
-                line("$i  ${setting.cct} K, G/M %+d → %s  (%+.0f mired, tint %+.1f)"
-                    .format(setting.gm, fmt(m.first), dd.mired, dd.duv * 1000))
-                when (val step = d.next(m.first)) {
+                val dd = delta(m.c, target)
+                line("$i  ${setting.cct} K, G/M %+d → %s  (%+.0f mired, tint %+.1f)  %s"
+                    .format(setting.gm, fmt(m.c), dd.mired, dd.duv * 1000, fmtSettle(m.settle)))
+                when (val step = d.next(m.c)) {
                     is DialIn.Step.Matched ->
                         return@runTask finish(true, "Matched: ${step.setting.cct} K, G/M %+d".format(step.setting.gm))
                     is DialIn.Step.Partial -> return@runTask finish(false, step.reason)
@@ -439,25 +459,34 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             line("Hold the card in the light; it will step through ${CALIBRATION_TARGETS.size} colour temps")
             val ambient = lockAndReadAmbient(node.unicast, LightSetting(5600, 0)) ?: return@runTask
             val points = mutableListOf<CalPoint>()
+            val settle = mutableMapOf<Double, Settle>()
             var minShare = 1.0
             for (k in CALIBRATION_TARGETS) {
                 rig.apply(node.unicast, LightSetting(k.toInt(), 0))
-                delay(SETTLE_MS + 300)
                 val m = readLight(ambient, calibrated = false) ?: return@runTask
-                points += CalPoint(k, m.first)
-                minShare = minOf(minShare, m.second)
-                line("%,d K → read %s  (light %.0f%% of the card)".format(k.toInt(), fmt(m.first), m.second * 100))
+                points += CalPoint(k, m.c)
+                settle[k] = m.settle
+                minShare = minOf(minShare, m.share)
+                line("%,d K → read %s  (light %.0f%% of the card)  %s"
+                    .format(k.toInt(), fmt(m.c), m.share * 100, fmtSettle(m.settle)))
             }
             rig.set(node.unicast, start)
             try {
                 val cal = Calibration(points, source = node.name)
-                // Ambient is subtracted, but its noise isn't: the more of the card's
-                // light comes from the room, the less the readings can be trusted.
-                val warnings = if (minShare < GOOD_SHARE) listOf(
-                    "Room light was up to %.0f%% of the card. Brighter light or a darker room gives a cleaner result."
-                        .format((1 - minShare) * 100)
-                ) else emptyList()
-                _state.update { it.copy(calReview = CalReview(cal, warnings)) }
+                val warnings = buildList {
+                    // Ambient is subtracted, but its noise isn't: the more of the card's
+                    // light comes from the room, the less the readings can be trusted.
+                    if (minShare < GOOD_SHARE) add(
+                        "Room light was up to %.0f%% of the card. Brighter light or a darker room gives a cleaner result."
+                            .format((1 - minShare) * 100)
+                    )
+                    val unsettled = settle.filterValues { !it.settled }.keys
+                    if (unsettled.isNotEmpty()) add(
+                        "Readings at ${unsettled.joinToString { formatKelvin(it) }} were still changing after " +
+                            "${SETTLE_TIMEOUT_MS / 1000} s. Keep the phone and card still, or check the light."
+                    )
+                }
+                _state.update { it.copy(calReview = CalReview(cal, warnings, settle)) }
                 finish(true, "Done, ${node.name} restored. Review the new calibration to save it")
             } catch (e: IllegalArgumentException) {
                 finish(false, e.message ?: "Calibration readings were inconsistent")
@@ -473,9 +502,8 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             val ambient = lockAndReadAmbient(node.unicast, LightSetting(start.cct, 0)) ?: return@runTask
             for (g in listOf(0, node.model.limits.gmMin, node.model.limits.gmMax)) {
                 rig.apply(node.unicast, LightSetting(start.cct, g))
-                delay(SETTLE_MS + 300)
                 val m = readLight(ambient) ?: return@runTask
-                line("G/M %+4d → %s".format(g, fmt(m.first)))
+                line("G/M %+4d → %s  %s".format(g, fmt(m.c), fmtSettle(m.settle)))
             }
             rig.set(node.unicast, start)
             finish(true, "Done — ${node.name} restored")
@@ -520,31 +548,92 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             return null
         }
         meter.setExposureLock(true)
+        val lit = meter.sample(4)
         rig.lightOff(unicast)
-        delay(SETTLE_MS)
-        val ambient = meter.sample(6)
+        val ambient = readAmbient(lit)
         rig.restore(unicast)
         line("Exposure locked; ambient measured with the light off")
         return ambient
     }
 
-    /** The light's own colour (ambient subtracted), and its share of the card. */
-    private suspend fun readLight(ambient: CameraMeter.Sample, calibrated: Boolean = true): Pair<CctDuv, Double>? {
+    /**
+     * Samples the card with the light off until two samples agree (so the light has
+     * finished fading out), or until the timeout, and returns their mean.
+     */
+    private suspend fun readAmbient(lit: CameraMeter.Sample): CameraMeter.Sample {
+        val start = SystemClock.elapsedRealtime()
+        delay(MIN_SETTLE_MS)
+        var prev = meter.sample(4)
+        while (true) {
+            val cur = meter.sample(4)
+            val settled = ambientSettled(prev.rgb, cur.rgb, lit.rgb)
+            if (settled || SystemClock.elapsedRealtime() - start >= SETTLE_TIMEOUT_MS) {
+                if (!settled) line("Ambient was still changing after ${SETTLE_TIMEOUT_MS / 1000} s")
+                return CameraMeter.Sample(
+                    DoubleArray(3) { (prev.rgb[it] + cur.rgb[it]) / 2 },
+                    maxOf(prev.level, cur.level),
+                    cur.warning,
+                )
+            }
+            prev = cur
+        }
+    }
+
+    /**
+     * The light's own colour (ambient subtracted), read after a light change once two
+     * consecutive readings agree within [Spread.SETTLED], or at the timeout. Returns
+     * the mean of the last two. A reading that fails (clipped, light too weak) counts
+     * as not yet settled, since the light may still be fading in; at the timeout the
+     * task fails with that reason.
+     */
+    private suspend fun readLight(ambient: CameraMeter.Sample, calibrated: Boolean = true): LightRead? {
+        val start = SystemClock.elapsedRealtime()
+        delay(MIN_SETTLE_MS)
+        var prev: Pair<CctDuv, Double>? = null
+        while (true) {
+            val cur = readLightOnce(ambient, calibrated)
+            val ms = SystemClock.elapsedRealtime() - start
+            val ok = cur.getOrNull()
+            if (ok == null) {
+                if (ms >= SETTLE_TIMEOUT_MS) {
+                    finish(false, cur.exceptionOrNull()?.message ?: "Reading failed")
+                    return null
+                }
+                prev = null
+                continue
+            }
+            if (prev != null) {
+                val spread = Spread.between(prev.first, ok.first)
+                val settled = spread.within(Spread.SETTLED)
+                if (settled || ms >= SETTLE_TIMEOUT_MS) {
+                    return LightRead(mean(prev.first, ok.first), minOf(prev.second, ok.second), Settle(spread, settled, ms))
+                }
+            }
+            prev = ok
+        }
+    }
+
+    /** One reading of the light: its colour and its share of the card, or why it failed. */
+    private suspend fun readLightOnce(ambient: CameraMeter.Sample, calibrated: Boolean): Result<Pair<CctDuv, Double>> {
         val on = meter.sample(4)
         if (on.warning == ExposureWarning.CLIPPED) {
-            finish(false, "Card clipped with the light on — move the card or lower brightness")
-            return null
+            return Result.failure(IllegalStateException("Card clipped with the light on — move the card or lower brightness"))
         }
         val iso = AmbientSubtraction.isolate(on.rgb, ambient.rgb)
         if (iso.lightShare < AmbientSubtraction.MIN_SHARE) {
-            finish(false, "The light is only %.0f%% of what's on the card — move it closer or raise brightness"
-                .format(iso.lightShare * 100))
-            return null
+            return Result.failure(IllegalStateException(
+                "The light is only %.0f%% of what's on the card — move it closer or raise brightness"
+                    .format(iso.lightShare * 100)
+            ))
         }
         val r = meter.toReading(iso.lightRgb, on.level, ExposureWarning.NONE)
         _state.update { it.copy(reading = r) }
-        return (if (calibrated) _state.value.corrected(r.xy) else r.cctDuv) to iso.lightShare
+        return Result.success((if (calibrated) _state.value.corrected(r.xy) else r.cctDuv) to iso.lightShare)
     }
+
+    private fun fmtSettle(s: Settle): String =
+        if (s.settled) "settled in %.1f s".format(s.ms / 1000.0)
+        else "still changing (±%.1f mired, ±%.1f tint)".format(s.spread.mired, s.spread.duv * 1000)
 
     private fun line(t: String) = _state.update { s -> s.copy(task = s.task?.let { it.copy(lines = it.lines + t) }) }
 
