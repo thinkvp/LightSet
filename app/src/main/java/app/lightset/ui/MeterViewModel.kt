@@ -125,11 +125,14 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private var taskJob: Job? = null
 
     private val prefs = app.getSharedPreferences("match", android.content.Context.MODE_PRIVATE)
+    /** Manual brightness/CCT/G/M changes not yet sent; sends run one at a time and skip stale values. */
+    private val pending = MutableStateFlow<Map<Int, LightRig.LightState>>(emptyMap())
     private val selectedFlow = MutableStateFlow(prefs.getInt(KEY_SELECTED, -1).takeIf { it >= 0 })
 
     init {
         viewModelScope.launch {
-            combine(rig.nodes, rig.states, rig.status, rig.reachable, selectedFlow) { nodes, states, st, reach, sel ->
+            val shownStates = combine(rig.states, pending) { states, p -> states + p }
+            combine(rig.nodes, shownStates, rig.status, rig.reachable, selectedFlow) { nodes, states, st, reach, sel ->
                 val u = sel?.takeIf { s -> nodes.any { it.unicast == s } } ?: nodes.firstOrNull()?.unicast
                 val lightStatus = when {
                     u == null -> LightRig.Status.OFFLINE
@@ -143,6 +146,21 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         viewModelScope.launch { rig.lastError.collect { e -> _state.update { it.copy(lightError = e) } } }
+        viewModelScope.launch {
+            pending.collect { map ->
+                for ((u, s) in map) {
+                    try {
+                        rig.set(u, s)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        _state.update { it.copy(error = "Light: ${e.message}") }
+                    }
+                    // Done with this light unless a newer value arrived meanwhile.
+                    pending.update { m -> if (m[u] == s) m - u else m }
+                }
+            }
+        }
         prefs.getFloat(KEY_PATCH, CameraMeter.DEFAULT_PATCH).let { p ->
             _state.update { it.copy(patch = p) }
             viewModelScope.launch { meter.setPatch(p) }
@@ -270,7 +288,21 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- Light ---------------------------------------------------------------
 
-    fun setLightBrightness(percent: Int) = lightCall { target()?.let { rig.setBrightness(it, percent) } }
+    /** Brightness from the slider (turns the light on); shown straight away, sent in the background. */
+    fun setLightBrightness(percent: Int) {
+        val u = target() ?: return
+        val l = _state.value.light ?: return
+        if (_state.value.task?.running == true) return
+        pending.update { it + (u to l.copy(brightness = percent.coerceIn(0, 100), on = true)) }
+    }
+
+    /** Manual CCT and G/M from the sliders; shown straight away, sent in the background. */
+    fun setLightColour(cct: Int, gm: Int) {
+        val u = target() ?: return
+        val l = _state.value.light ?: return
+        if (_state.value.task?.running == true) return
+        pending.update { it + (u to l.copy(mode = LightRig.Mode.CCT, cct = cct, gm = gm)) }
+    }
 
     fun setLightOn(on: Boolean) = lightCall { target()?.let { rig.setOn(it, on) } }
 

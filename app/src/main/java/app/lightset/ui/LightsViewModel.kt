@@ -11,6 +11,8 @@ import androidx.lifecycle.viewModelScope
 import app.lightset.LightRig
 import app.lightset.LightSetApp
 import app.lightset.ble.NanliteProtocol
+import app.lightset.data.Scene
+import app.lightset.data.SceneStore
 import app.lightset.mesh.LightModel
 import app.lightset.mesh.MeshNode
 import kotlinx.coroutines.CancellationException
@@ -48,13 +50,15 @@ data class LightsUiState(
     val log: List<String> = emptyList(),
     /** Result of the last per-light action (e.g. set-up), shown under the light. */
     val notice: Pair<Int, String>? = null,
+    val scenes: List<Scene> = emptyList(),
 )
 
 @SuppressLint("MissingPermission")
 class LightsViewModel(app: Application) : AndroidViewModel(app) {
     private val adapter = app.getSystemService(BluetoothManager::class.java)?.adapter
     private val rig = (app as LightSetApp).rig
-    private val _state = MutableStateFlow(LightsUiState())
+    private val scenes = SceneStore(app)
+    private val _state = MutableStateFlow(LightsUiState(scenes = scenes.load()))
     val state: StateFlow<LightsUiState> = _state
 
     /** Control changes not yet sent, per light; sends run one at a time and skip stale values. */
@@ -88,6 +92,29 @@ class LightsViewModel(app: Application) : AndroidViewModel(app) {
 
     /** From the light controls; the UI shows the new values straight away. */
     fun setLight(unicast: Int, target: LightRig.LightState) = pending.update { it + (unicast to target) }
+
+    // --- Scenes ----------------------------------------------------------------
+
+    /** Saves every light's current settings (including ones still being sent). */
+    fun saveScene(name: String) {
+        val s = _state.value
+        val scene = Scene(Scene.newId(), name.ifBlank { "Scene" }, System.currentTimeMillis(),
+            s.lights.mapNotNull { n -> s.states[n.unicast]?.let { n.unicast to it } }.toMap())
+        updateScenes(s.scenes + scene)
+    }
+
+    /** Sends each light in the scene its saved settings; lights not in it are left alone. */
+    fun loadScene(scene: Scene) {
+        val known = rig.nodes.value.map { it.unicast }.toSet()
+        pending.update { it + scene.lights.filterKeys { u -> u in known } }
+    }
+
+    fun deleteScene(id: String) = updateScenes(_state.value.scenes.filterNot { it.id == id })
+
+    private fun updateScenes(list: List<Scene>) {
+        scenes.save(list)
+        _state.update { it.copy(scenes = list) }
+    }
 
     fun reconnect() {
         viewModelScope.launch { rig.reconnect() }

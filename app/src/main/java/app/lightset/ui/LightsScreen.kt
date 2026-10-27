@@ -17,6 +17,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.MoreVert
@@ -51,46 +52,107 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.lightset.LightRig
 import app.lightset.mesh.LightModel
+import app.lightset.data.Scene
 import app.lightset.mesh.MeshNode
+import java.text.DateFormat
+import java.util.Date
 
 @Composable
 fun LightsScreen(vm: LightsViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+    Column(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Lights", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                if (state.add == null) {
+                    FilledTonalButton(onClick = vm::startAdd) {
+                        Icon(Icons.Filled.Add, contentDescription = null)
+                        Text(" Add light")
+                    }
+                }
+            }
+            // Only problems the user can fix (e.g. Bluetooth off); per-light status is the dot.
+            if (state.status == LightRig.Status.OFFLINE && state.lights.isNotEmpty() && state.statusError != null) {
+                Text(
+                    state.statusError + " · tap to retry",
+                    Modifier.clickable(onClick = vm::reconnect),
+                    style = MaterialTheme.typography.bodySmall, color = WarnAmber,
+                )
+            }
+            state.add?.let { AddLightCard(it, vm) }
+            state.lights.forEach { node ->
+                LightControlCard(node, state, vm)
+            }
+            Diagnostics(state)
+        }
+        HorizontalDivider()
+        SceneBar(state, vm)
+    }
+}
+
+/** Save and load scenes: every light's settings at once. Always on screen. */
+@Composable
+private fun SceneBar(state: LightsUiState, vm: LightsViewModel) {
+    var saving by remember { mutableStateOf(false) }
+    var loading by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf<Scene?>(null) }
+    val fmt = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT) }
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Lights", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-            if (state.add == null) {
-                FilledTonalButton(onClick = vm::startAdd) {
-                    Icon(Icons.Filled.Add, contentDescription = null)
-                    Text(" Add light")
+        FilledTonalButton(onClick = { saving = true }, enabled = state.lights.isNotEmpty(), modifier = Modifier.weight(1f)) {
+            Text("Save scene")
+        }
+        Box(Modifier.weight(1f)) {
+            FilledTonalButton(onClick = { loading = true }, enabled = state.scenes.isNotEmpty(), modifier = Modifier.fillMaxWidth()) {
+                Text("Load scene")
+            }
+            DropdownMenu(expanded = loading, onDismissRequest = { loading = false }) {
+                state.scenes.sortedByDescending { it.createdAt }.forEach { scene ->
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(scene.name)
+                                Text("${scene.lights.size} light${if (scene.lights.size == 1) "" else "s"} · " +
+                                    fmt.format(Date(scene.createdAt)), style = MaterialTheme.typography.bodySmall)
+                            }
+                        },
+                        onClick = { vm.loadScene(scene); loading = false },
+                        trailingIcon = {
+                            IconButton(onClick = { loading = false; deleting = scene }) {
+                                Icon(Icons.Filled.Delete, contentDescription = "Delete ${scene.name}")
+                            }
+                        },
+                    )
                 }
             }
         }
-        // Only problems the user can fix (e.g. Bluetooth off); per-light status is the dot.
-        if (state.status == LightRig.Status.OFFLINE && state.lights.isNotEmpty() && state.statusError != null) {
-            Text(
-                state.statusError + " · tap to retry",
-                Modifier.clickable(onClick = vm::reconnect),
-                style = MaterialTheme.typography.bodySmall, color = WarnAmber,
-            )
-        }
-        state.add?.let { AddLightCard(it, vm) }
-        state.lights.forEach { node ->
-            LightControlCard(node, state, vm)
-        }
-        Text(
-            "Close NANLINK while using LightSet: a light accepts one Bluetooth connection at a time. " +
-                "A light's own knobs are overridden whenever the app sends it a setting.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+    }
+    deleting?.let { scene ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text("Delete ${scene.name}?") },
+            confirmButton = { TextButton(onClick = { vm.deleteScene(scene.id); deleting = null }) { Text("Delete") } },
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
         )
-        Diagnostics(state)
+    }
+    if (saving) {
+        val default = remember { "Scene " + DateFormat.getTimeInstance(DateFormat.SHORT).format(Date()) }
+        var name by remember { mutableStateOf(default) }
+        AlertDialog(
+            onDismissRequest = { saving = false },
+            title = { Text("Save scene") },
+            text = { OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true) },
+            confirmButton = { TextButton(onClick = { vm.saveScene(name); saving = false }) { Text("Save") } },
+            dismissButton = { TextButton(onClick = { saving = false }) { Text("Cancel") } },
+        )
     }
 }
 
@@ -169,7 +231,7 @@ private fun LightControlCard(node: MeshNode, state: LightsUiState, vm: LightsVie
                     }
                 }
                 ValueControl("Brightness", brightness, 0..100, step = 1, format = { "$it%" }, enabled = online,
-                    onChange = { send(l.copy(brightness = it, on = true)) })
+                    onChange = { send(l.copy(brightness = it, on = true)) }, track = brightnessTrack)
                 if (hsi) {
                     HsiControls(l, online, onHue = { setHsi(hue = it) }, onSat = { setHsi(sat = it) })
                 } else {

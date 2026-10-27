@@ -217,6 +217,9 @@ fun gmTrack(range: IntRange): Brush {
     )
 }
 
+/** Dark to full white, for a brightness slider. */
+val brightnessTrack: Brush = Brush.horizontalGradient(listOf(Color(0xFF202020), Color.White))
+
 /** The hue spectrum at full saturation. */
 val hueTrack: Brush = Brush.horizontalGradient((0..6).map { Color.hsv(it * 60f % 360f, 1f, 1f) })
 

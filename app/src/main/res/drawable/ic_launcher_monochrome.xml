@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Themed-icon version: the two circles as rings, the overlap filled. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Scaled to fill the 66 dp safe zone. -->
+    <group android:pivotX="54" android:pivotY="54" android:scaleX="1.12" android:scaleY="1.12">
+        <path
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="3"
+            android:pathData="M26.5,54a16.5,16.5 0,1 0,33 0a16.5,16.5 0,1 0,-33 0z" />
+        <path
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="3"
+            android:pathData="M48.5,54a16.5,16.5 0,1 0,33 0a16.5,16.5 0,1 0,-33 0z" />
+        <group>
+            <clip-path android:pathData="M25,54a18,18 0,1 0,36 0a18,18 0,1 0,-36 0z" />
+            <path
+                android:fillColor="#FFFFFFFF"
+                android:pathData="M47,54a18,18 0,1 0,36 0a18,18 0,1 0,-36 0z" />
+        </group>
+    </group>
+</vector>

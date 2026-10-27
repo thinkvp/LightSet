@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Warm ambient and cool light overlapping; where they meet (the match) is white. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Scaled to fill the 66 dp safe zone. -->
+    <group android:pivotX="54" android:pivotY="54" android:scaleX="1.12" android:scaleY="1.12">
+        <!-- Warm circle -->
+        <path android:pathData="M25,54a18,18 0,1 0,36 0a18,18 0,1 0,-36 0z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="25" android:startY="40"
+                    android:endX="61" android:endY="68"
+                    android:startColor="#FFFF8A2A"
+                    android:endColor="#FFFFC46B" />
+            </aapt:attr>
+        </path>
+        <!-- Cool circle -->
+        <path android:pathData="M47,54a18,18 0,1 0,36 0a18,18 0,1 0,-36 0z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="47" android:startY="40"
+                    android:endX="83" android:endY="68"
+                    android:startColor="#FFBFDDFF"
+                    android:endColor="#FF5E9BFF" />
+            </aapt:attr>
+        </path>
+        <!-- Overlap: the cool circle clipped to the warm one, in white -->
+        <group>
+            <clip-path android:pathData="M25,54a18,18 0,1 0,36 0a18,18 0,1 0,-36 0z" />
+            <path
+                android:fillColor="#FFFFFFFF"
+                android:pathData="M47,54a18,18 0,1 0,36 0a18,18 0,1 0,-36 0z" />
+        </group>
+    </group>
+</vector>

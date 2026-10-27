@@ -40,7 +40,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -167,15 +166,9 @@ fun MeterScreen(vm: MeterViewModel) {
             }
 
             LightCard(state, vm)
-            CalibrationSection(state, vm)
+            state.calReview?.let { CalibrationReview(it, state.calibration, vm) }
 
             state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-            Text(
-                "Fill the box with a white or grey card; drag up or down on the preview to resize it." +
-                    (info?.let { " ${it.description}." } ?: ""),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 
@@ -187,12 +180,17 @@ fun MeterScreen(vm: MeterViewModel) {
 @Composable
 private fun Header(state: MeterUiState, vm: MeterViewModel) {
     var menu by remember { mutableStateOf(false) }
+    var guide by remember { mutableStateOf(false) }
+    var confirmClear by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Text("Match", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
         LightStatusChip(state.selectedNode?.name?.take(14) ?: "No light", state.lightStatus, onRetry = vm::reconnectLight)
         Box {
             IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More") }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                CalibrationMenuItems(state, vm, onPicked = { menu = false },
+                    onGuide = { guide = true }, onClear = { confirmClear = true })
+                HorizontalDivider()
                 DropdownMenuItem(
                     text = { Text("Test G/M response") },
                     enabled = state.canRunLightTask,
@@ -201,6 +199,7 @@ private fun Header(state: MeterUiState, vm: MeterViewModel) {
             }
         }
     }
+    CalibrationDialogs(state, vm, guide, confirmClear, closeGuide = { guide = false }, closeClear = { confirmClear = false })
 }
 
 /** CCT span the readout's gauge covers. */
@@ -243,15 +242,16 @@ private fun Readout(reading: Reading?, shown: CctDuv?, state: MeterUiState, modi
                 if (d.withinTolerance(MATCH_MIRED, MATCH_DUV)) {
                     Pill("Matches", GoodGreen)
                 } else {
+                    // What to do to the light to match, coloured by the direction to go.
                     Pill(describeTemp(d), when {
                         abs(d.mired) <= MATCH_MIRED -> GoodGreen
-                        d.mired > 0 -> kelvinColor(2700)
-                        else -> kelvinColor(9000)
+                        d.mired > 0 -> kelvinColor(9000)
+                        else -> kelvinColor(2700)
                     })
                     Pill(describeTint(d), when {
                         abs(d.duv) <= MATCH_DUV -> GoodGreen
-                        d.duv > 0 -> Color(0xFF5FBF5F)
-                        else -> Color(0xFFD45FD4)
+                        d.duv > 0 -> Color(0xFFD45FD4)
+                        else -> Color(0xFF5FBF5F)
                     })
                 }
             }
@@ -372,7 +372,28 @@ private fun LightCard(state: MeterUiState, vm: MeterViewModel) {
                     }
                 }
             }
-            BrightnessRow(light?.brightness, enabled = online && task?.running != true, onSet = vm::setLightBrightness)
+            ValueControl("Brightness", light?.brightness ?: 20, 0..100, step = 1, format = { "$it%" },
+                enabled = online && task?.running != true && light != null, onChange = vm::setLightBrightness,
+                track = brightnessTrack)
+            val node = state.selectedNode
+            if (light != null && node != null) {
+                val limits = node.model.limits
+                val cctRange = limits.cctMin..limits.cctMax
+                val manual = online && task?.running != true
+                ValueControl(
+                    "CCT", light.cct.coerceIn(cctRange), cctRange, step = 50, format = { formatKelvin(it.toDouble()) },
+                    enabled = manual, onChange = { vm.setLightColour(it, light.gm) },
+                    toSlider = { cctToSlider(it, cctRange) },
+                    fromSlider = { sliderToCct(it, cctRange) },
+                    track = cctTrack(cctRange),
+                )
+                if (limits.hasGm) {
+                    val gmRange = limits.gmMin..limits.gmMax
+                    ValueControl("G/M", light.gm.coerceIn(gmRange), gmRange, step = 1,
+                        format = { if (it == 0) "0" else "%+d %s".format(it, if (it > 0) "G" else "M") },
+                        enabled = manual, onChange = { vm.setLightColour(light.cct, it) }, track = gmTrack(gmRange))
+                }
+            }
             if (light?.brightness == null) {
                 Text(
                     "Set brightness first. Matching only changes CCT and G/M.",
@@ -423,24 +444,6 @@ private fun TaskView(task: TaskUi, onDismiss: () -> Unit) {
     }
     task.result?.let {
         Text(it, color = if (task.success) GoodGreen else WarnAmber, fontWeight = FontWeight.SemiBold)
-    }
-}
-
-/** Brightness slider; sends when the finger lifts. */
-@Composable
-private fun BrightnessRow(brightness: Int?, enabled: Boolean, onSet: (Int) -> Unit) {
-    var value by remember(brightness) { mutableStateOf((brightness ?: 20).toFloat()) }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text("Brightness", Modifier.width(84.dp), style = MaterialTheme.typography.bodyMedium)
-        Slider(
-            value = value,
-            onValueChange = { value = it },
-            onValueChangeFinished = { onSet(value.roundToInt()) },
-            valueRange = 0f..100f,
-            enabled = enabled,
-            modifier = Modifier.weight(1f),
-        )
-        Text("${value.roundToInt()}%", Modifier.width(48.dp).padding(start = 8.dp))
     }
 }
 
@@ -540,51 +543,54 @@ private fun CalibrationCard(
     }
 }
 
-/** What calibration is in use, how to make a new one, and a new one awaiting review. */
+/** Meter calibration in the overflow menu: what's in use, and making, restoring or clearing one. */
 @Composable
-private fun CalibrationSection(state: MeterUiState, vm: MeterViewModel) {
-    var menu by remember { mutableStateOf(false) }
-    var confirmClear by remember { mutableStateOf(false) }
-    var guide by remember { mutableStateOf(false) }
+private fun CalibrationMenuItems(
+    state: MeterUiState, vm: MeterViewModel, onPicked: () -> Unit, onGuide: () -> Unit, onClear: () -> Unit,
+) {
     val cal = state.calibration
     val lightName = state.selectedNode?.name ?: "the light"
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp))
-            .padding(start = 12.dp, top = 6.dp, bottom = 6.dp, end = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text("Meter calibration", style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(cal?.let(::describeCalibration) ?: "Not calibrated", style = MaterialTheme.typography.bodyLarge)
-        }
-        Box {
-            TextButton(onClick = { menu = true }, enabled = !state.busy && state.calSession == null) { Text("Calibrate") }
-            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                DropdownMenuItem(
-                    text = { Text("Automatic, with $lightName") },
-                    enabled = state.canRunLightTask,
-                    onClick = { menu = false; guide = true },
-                )
-                DropdownMenuItem(text = { Text("Manually") }, onClick = { menu = false; vm.startCalibration() })
-                state.previousCalibration?.let { prev ->
-                    DropdownMenuItem(
-                        text = { Text("Restore previous (${describeCalibration(prev)})") },
-                        onClick = { menu = false; vm.restorePreviousCalibration() },
-                    )
-                }
-                if (cal != null) {
-                    DropdownMenuItem(text = { Text("Clear calibration") }, onClick = { menu = false; confirmClear = true })
-                }
+    val canStart = !state.busy && state.calSession == null
+    DropdownMenuItem(
+        text = {
+            Column {
+                Text("Meter calibration", style = MaterialTheme.typography.labelMedium)
+                Text(cal?.let(::describeCalibration) ?: "Not calibrated", style = MaterialTheme.typography.bodySmall)
             }
-        }
+        },
+        enabled = false,
+        onClick = {},
+    )
+    DropdownMenuItem(
+        text = { Text("Calibrate automatically, with $lightName") },
+        enabled = canStart && state.canRunLightTask,
+        onClick = { onPicked(); onGuide() },
+    )
+    DropdownMenuItem(text = { Text("Calibrate manually") }, enabled = canStart,
+        onClick = { onPicked(); vm.startCalibration() })
+    state.previousCalibration?.let { prev ->
+        DropdownMenuItem(
+            text = { Text("Restore previous calibration (${describeCalibration(prev)})") },
+            enabled = canStart,
+            onClick = { onPicked(); vm.restorePreviousCalibration() },
+        )
     }
-    state.calReview?.let { CalibrationReview(it, cal, vm) }
+    if (cal != null) {
+        DropdownMenuItem(text = { Text("Clear calibration") }, enabled = canStart,
+            onClick = { onPicked(); onClear() })
+    }
+}
+
+/** The auto-calibration guide and clear confirmation opened from the menu. */
+@Composable
+private fun CalibrationDialogs(
+    state: MeterUiState, vm: MeterViewModel, guide: Boolean, confirmClear: Boolean,
+    closeGuide: () -> Unit, closeClear: () -> Unit,
+) {
+    val lightName = state.selectedNode?.name ?: "the light"
     if (guide) {
         AlertDialog(
-            onDismissRequest = { guide = false },
+            onDismissRequest = { closeGuide() },
             title = { Text("Calibrate with $lightName") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -602,20 +608,20 @@ private fun CalibrationSection(state: MeterUiState, vm: MeterViewModel) {
                 }
             },
             confirmButton = {
-                TextButton(onClick = { guide = false; vm.startAutoCalibration() }, enabled = state.canRunLightTask) {
+                TextButton(onClick = { closeGuide(); vm.startAutoCalibration() }, enabled = state.canRunLightTask) {
                     Text("Start")
                 }
             },
-            dismissButton = { TextButton(onClick = { guide = false }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { closeGuide() }) { Text("Cancel") } },
         )
     }
     if (confirmClear) {
         AlertDialog(
-            onDismissRequest = { confirmClear = false },
+            onDismissRequest = { closeClear() },
             title = { Text("Clear calibration?") },
-            text = { Text("Readings go back to the phone's own colour matrices. You can bring it back with Calibrate → Restore previous.") },
-            confirmButton = { TextButton(onClick = { vm.clearCalibration(); confirmClear = false }) { Text("Clear") } },
-            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } },
+            text = { Text("Readings go back to the phone's own colour matrices. You can bring it back from the menu with Restore previous calibration.") },
+            confirmButton = { TextButton(onClick = { vm.clearCalibration(); closeClear() }) { Text("Clear") } },
+            dismissButton = { TextButton(onClick = { closeClear() }) { Text("Cancel") } },
         )
     }
 }
@@ -697,20 +703,22 @@ private fun SaveDialog(onSave: (String) -> Unit, onDismiss: () -> Unit) {
     )
 }
 
+/** What to do to the light's CCT to match the reference. */
 private fun describeTemp(d: Delta): String {
     val k = abs(d.kelvin).toInt()
     return when {
         abs(d.mired) <= MATCH_MIRED -> "CCT ✓"
-        d.mired > 0 -> "$k K warmer"
-        else -> "$k K cooler"
+        d.mired > 0 -> "Cool it ~$k K"
+        else -> "Warm it ~$k K"
     }
 }
 
+/** What to do to the light's tint to match the reference. */
 private fun describeTint(d: Delta): String {
     val t = abs(d.duv) * 1000
     return when {
         abs(d.duv) <= MATCH_DUV -> "Tint ✓"
-        d.duv > 0 -> "%.1f greener".format(t)
-        else -> "%.1f more magenta".format(t)
+        d.duv > 0 -> "Add magenta %.1f".format(t)
+        else -> "Add green %.1f".format(t)
     }
 }
