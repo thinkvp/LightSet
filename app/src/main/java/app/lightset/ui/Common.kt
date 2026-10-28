@@ -46,6 +46,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.lightset.LightRig
@@ -92,7 +93,8 @@ fun LightStatusChip(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Box(Modifier.size(8.dp).background(color, CircleShape))
-        Text(if (name.isBlank()) label else "$name · $label", style = MaterialTheme.typography.labelMedium)
+        Text(if (name.isBlank()) label else "$name · $label", style = MaterialTheme.typography.labelMedium,
+            maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 

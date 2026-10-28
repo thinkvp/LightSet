@@ -76,4 +76,16 @@ class CalibrationTest {
     fun worstErrorAgainstOwnPointsIsZero() {
         assertEquals(0.0, cal.worstError(cal.points), 1e-9)
     }
+
+    @Test
+    fun referenceMeterTargetsCorrectTint() {
+        val cal = Calibration(listOf(
+            CalPoint(3050.0, CctDuv(2800.0, 0.002), targetDuv = -0.004, setKelvin = 3200.0),
+            CalPoint(5330.0, CctDuv(5000.0, 0.001), targetDuv = -0.005, setKelvin = 5600.0),
+        ))
+        val c = cal.apply(CctDuv(5000.0, 0.001))
+        assertEquals(5330.0, c.cct, 0.5)
+        assertEquals(-0.005, c.duv, 1e-9)
+        assertEquals(cal.points, Calibration.fromJson(cal.toJson()).points)
+    }
 }

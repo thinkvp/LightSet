@@ -7,9 +7,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.lightset.LightRig
 import app.lightset.LightSetApp
+import app.lightset.ble.Im150
 import app.lightset.ble.NanliteProtocol
 import app.lightset.camera.CameraMeter
 import app.lightset.camera.ExposureWarning
+import app.lightset.camera.MeterSource
 import app.lightset.camera.Reading
 import app.lightset.color.AmbientSubtraction
 import app.lightset.color.CalPoint
@@ -24,12 +26,15 @@ import app.lightset.color.ambientSettled
 import app.lightset.color.cctDuv
 import app.lightset.color.delta
 import app.lightset.color.mean
+import app.lightset.color.xyToXyz
+import app.lightset.color.xyzToXy
 import app.lightset.data.Reference
 import app.lightset.data.ReferenceStore
 import app.lightset.mesh.MeshNode
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -47,6 +52,7 @@ private const val SETTLE_TIMEOUT_MS = 5000L
 
 private const val KEY_SELECTED = "selected_light"
 private const val KEY_PATCH = "patch"
+private const val KEY_METER = "meter"
 
 /** Below this share of the card's light, a calibration reading is flagged. */
 private const val GOOD_SHARE = 0.5
@@ -54,9 +60,16 @@ private const val GOOD_SHARE = 0.5
 /** Colour temps a trusted light is set to during calibration, at G/M 0. */
 val CALIBRATION_TARGETS = listOf(2700.0, 3200.0, 4300.0, 5600.0, 6500.0)
 
-/** In-progress manual calibration: one raw reading slot per target, and the step being measured. */
+/** What Match reads colour with. */
+enum class ColourMeter { PHONE, IM150 }
+
+/**
+ * In-progress manual calibration: one raw reading slot per target, the IM150's reading
+ * of the same light when one was connected, and the step being measured.
+ */
 data class CalSession(
     val readings: List<CctDuv?> = CALIBRATION_TARGETS.map { null },
+    val references: List<CctDuv?> = CALIBRATION_TARGETS.map { null },
     val index: Int = 0,
     val error: String? = null,
 ) {
@@ -112,25 +125,41 @@ data class MeterUiState(
     val light: LightRig.LightState? = null,
     val lightStatus: LightRig.Status = LightRig.Status.OFFLINE,
     val lightError: String? = null,
+    val meter: ColourMeter = ColourMeter.PHONE,
+    val im150Status: Im150.Status = Im150.Status.OFF,
+    val im150Battery: Int? = null,
+    val im150Error: String? = null,
 ) {
     val selectedNode: MeshNode? get() = lights.firstOrNull { it.unicast == selected }
 
     val active: Reference? get() = references.firstOrNull { it.id == activeId }
     val busy: Boolean get() = measuring || task?.running == true
+    val im150Connected: Boolean get() = im150Status == Im150.Status.CONNECTED
 
-    /** A light task can start: camera running, light reachable, on, brightness chosen. */
-    val canRunLightTask: Boolean
-        get() = cameraOpen && !busy && !live && calSession == null &&
+    /** The chosen colour meter can take readings. */
+    val meterReady: Boolean get() = if (meter == ColourMeter.IM150) im150Connected else cameraOpen
+
+    /** The selected light can be used for a task: reachable, on, brightness chosen, nothing else running. */
+    val lightReady: Boolean
+        get() = !busy && !live && calSession == null &&
             lightStatus == LightRig.Status.ONLINE && light?.on == true && (light.brightness ?: 0) > 0
 
-    /** Sensor-model reading with the stored calibration applied, if there is one. */
-    fun corrected(xy: Xy): CctDuv = cctDuv(xy).let { calibration?.apply(it) ?: it }
+    /** A light task can start: meter ready, light reachable, on, brightness chosen. */
+    val canRunLightTask: Boolean get() = meterReady && lightReady
+
+    /** Auto-calibration calibrates the camera, so it needs the camera whichever meter is chosen. */
+    val canAutoCalibrate: Boolean get() = cameraOpen && lightReady
+
+    /** A reading's colour: the phone's with the stored calibration applied, the IM150's as it is. */
+    fun corrected(xy: Xy, source: MeterSource): CctDuv =
+        cctDuv(xy).let { if (source == MeterSource.IM150) it else calibration?.apply(it) ?: it }
 }
 
 class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private val meter = CameraMeter(app)
     private val store = ReferenceStore(app)
     private val rig = (app as LightSetApp).rig
+    private val im150 = (app as LightSetApp).im150
 
     private val _state = MutableStateFlow(
         MeterUiState(
@@ -167,6 +196,12 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         viewModelScope.launch { rig.lastError.collect { e -> _state.update { it.copy(lightError = e) } } }
+        viewModelScope.launch { im150.status.collect { st -> _state.update { it.copy(im150Status = st) } } }
+        viewModelScope.launch { im150.battery.collect { b -> _state.update { it.copy(im150Battery = b) } } }
+        viewModelScope.launch { im150.error.collect { e -> _state.update { it.copy(im150Error = e) } } }
+        val chosen = runCatching { ColourMeter.valueOf(prefs.getString(KEY_METER, null)!!) }.getOrDefault(ColourMeter.PHONE)
+        _state.update { it.copy(meter = chosen) }
+        im150.need(chosen == ColourMeter.IM150)
         viewModelScope.launch {
             pending.collect { map ->
                 for ((u, s) in map) {
@@ -199,6 +234,30 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The selected light's address; tasks need one. */
     private fun target(): Int? = _state.value.selected
+
+    // --- Meter choice --------------------------------------------------------
+
+    fun setMeter(m: ColourMeter) {
+        if (_state.value.busy || _state.value.meter == m) return
+        setLive(false)
+        prefs.edit().putString(KEY_METER, m.name).apply()
+        _state.update { it.copy(meter = m, reading = null, error = null) }
+        im150.need(m == ColourMeter.IM150)
+    }
+
+    fun retryIm150() = im150.retry()
+
+    /**
+     * Calibration calibrates the camera, so it needs the phone chosen (the camera only
+     * runs then). The IM150 stays connected, to be the reference.
+     */
+    fun useCameraForCalibration() = setMeter(ColourMeter.PHONE)
+
+    /** Stops connecting to the IM150 and goes back to the phone. */
+    fun forgetIm150() {
+        setMeter(ColourMeter.PHONE)
+        im150.forget()
+    }
 
     // --- Camera and readings -------------------------------------------------
 
@@ -260,7 +319,24 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun takeReading(frames: Int): Reading? {
+    /** A reading from the chosen meter: the camera's ([frames] averaged) or the IM150's next one. */
+    private suspend fun takeReading(frames: Int): Reading? =
+        if (_state.value.meter == ColourMeter.IM150) takeIm150Reading() else takeCameraReading(frames)
+
+    private suspend fun takeIm150Reading(): Reading? {
+        return try {
+            im150Reading(im150.next()).also { r -> _state.update { it.copy(reading = r, error = null) } }
+        } catch (e: TimeoutCancellationException) {
+            _state.update { it.copy(error = "No reading from the IM150") }
+            null
+        }
+    }
+
+    private fun im150Reading(s: Im150.Sample): Reading =
+        Reading(s.xy, cctDuv(s.xy), MeterSource.IM150, level = 0.0, warning = ExposureWarning.NONE,
+            timestampMs = s.timeMs, lux = s.lux)
+
+    private suspend fun takeCameraReading(frames: Int): Reading? {
         return try {
             meter.measure(frames).also { r -> _state.update { it.copy(reading = r, error = null) } }
         } catch (e: CancellationException) {
@@ -277,7 +353,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     fun saveReference(name: String) {
         val s = _state.value
         val r = s.reading ?: return
-        val shown = s.corrected(r.xy)
+        val shown = s.corrected(r.xy, r.source)
         val ref = Reference(
             id = Reference.newId(),
             name = name.ifBlank { "Reference" },
@@ -344,6 +420,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     // --- Manual calibration --------------------------------------------------
 
     fun startCalibration() {
+        useCameraForCalibration()
         setLive(false)
         _state.update { it.copy(calSession = CalSession(), task = null) }
     }
@@ -354,33 +431,51 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         s.copy(calSession = s.calSession?.copy(index = index, error = null))
     }
 
+    /** Reads the card with the camera and, if one is connected, the light with the IM150. */
     fun measureCalStep() {
         val session = _state.value.calSession ?: return
         if (_state.value.busy) return
         viewModelScope.launch {
             _state.update { it.copy(measuring = true) }
-            val r = takeReading(frames = 6)
+            val r = takeCameraReading(frames = 6)
+            val ref = if (r != null && _state.value.im150Connected) {
+                try {
+                    cctDuv(im150.next().xy)
+                } catch (e: TimeoutCancellationException) {
+                    null
+                }
+            } else null
             _state.update { s ->
                 val cur = s.calSession ?: return@update s.copy(measuring = false)
                 if (r == null) return@update s.copy(measuring = false)
                 val readings = cur.readings.toMutableList().also { it[session.index] = r.cctDuv }
+                val refs = cur.references.toMutableList().also { it[session.index] = ref }
                 val next = readings.indexOfFirst { it == null }.takeIf { it >= 0 } ?: session.index
                 val warn = when (r.warning) {
                     ExposureWarning.CLIPPED -> "That reading was overexposed — consider redoing it."
                     ExposureWarning.TOO_DARK -> "That reading was very dark — consider redoing it."
                     ExposureWarning.NONE -> null
                 }
-                s.copy(measuring = false, calSession = cur.copy(readings = readings, index = next, error = warn))
+                s.copy(measuring = false,
+                    calSession = cur.copy(readings = readings, references = refs, index = next, error = warn))
             }
         }
     }
 
-    /** Finishes manual calibration; the result still has to be reviewed and saved. */
+    /**
+     * Finishes manual calibration; the result still has to be reviewed and saved. Steps
+     * the IM150 read use its reading as the truth; the rest assume the light's setting.
+     */
     fun finishManualCalibration() {
         val session = _state.value.calSession ?: return
-        val points = CALIBRATION_TARGETS.zip(session.readings).mapNotNull { (k, r) -> r?.let { CalPoint(k, it) } }
+        val points = CALIBRATION_TARGETS.indices.mapNotNull { i ->
+            val r = session.readings[i] ?: return@mapNotNull null
+            val ref = session.references[i]
+            CalPoint(ref?.cct ?: CALIBRATION_TARGETS[i], r, targetDuv = ref?.duv ?: 0.0, setKelvin = CALIBRATION_TARGETS[i])
+        }
+        val withIm150 = session.references.any { it != null }
         try {
-            val cal = Calibration(points, source = "manual")
+            val cal = Calibration(points, source = if (withIm150) "manual + IM150" else "manual")
             _state.update { it.copy(calSession = null, calReview = CalReview(cal)) }
         } catch (e: IllegalArgumentException) {
             _state.update { it.copy(calSession = session.copy(error = e.message)) }
@@ -420,14 +515,18 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         val ref = s.active ?: return
         val brightness = s.light?.brightness ?: return
         val node = s.selectedNode ?: return
-        val target = s.corrected(ref.xy)
+        val target = s.corrected(ref.xy, ref.source)
+        val probe = Probe(im150 = s.meter == ColourMeter.IM150)
         runTask("Matching ${node.name} to ${ref.name}") {
             val d = DialIn(target, node.model.limits)
             var setting = d.initial()
-            line("Target ${fmt(target)} · brightness $brightness%")
-            val ambient = lockAndReadAmbient(node.unicast, setting) ?: return@runTask
+            line("Target ${fmt(target)} · brightness $brightness% · reading with the ${probe.label}")
+            if ((ref.source == MeterSource.IM150) != probe.im150) {
+                line("Note: the reference was measured with the ${if (probe.im150) "phone" else "IM150"}")
+            }
+            val ambient = lockAndReadAmbient(node.unicast, setting, listOf(probe))?.single() ?: return@runTask
             for (i in 1..DIAL_MAX_STEPS) {
-                val m = readLight(ambient) ?: return@runTask
+                val m = readLight(probe, ambient) ?: return@runTask
                 val dd = delta(m.c, target)
                 line("$i  ${setting.cct} K, G/M %+d → %s  (%+.0f mired, tint %+.1f)  %s"
                     .format(setting.gm, fmt(m.c), dd.mired, dd.duv * 1000, fmtSettle(m.settle)))
@@ -447,32 +546,39 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Calibrates the meter against the test light: the app steps the light through
+     * Calibrates the camera against the test light: the app steps the light through
      * the calibration colour temps at G/M 0 and records what the sensor model reads,
-     * with ambient subtracted, so it works with room light on.
+     * with ambient subtracted, so it works with room light on. With the IM150
+     * connected, its reading of each step is the truth instead of the light's setting.
      */
     fun startAutoCalibration() {
-        val start = _state.value.light ?: return
-        val node = _state.value.selectedNode ?: return
+        val s = _state.value
+        val start = s.light ?: return
+        val node = s.selectedNode ?: return
+        val camera = Probe(im150 = false)
+        val reference = if (s.im150Connected) Probe(im150 = true) else null
         _state.update { it.copy(calReview = null) }
-        runTask("Calibrating meter with ${node.name}") {
+        runTask("Calibrating meter with ${node.name}", allowed = s.canAutoCalibrate) {
             line("Hold the card in the light; it will step through ${CALIBRATION_TARGETS.size} colour temps")
-            val ambient = lockAndReadAmbient(node.unicast, LightSetting(5600, 0)) ?: return@runTask
+            if (reference != null) line("The IM150's readings are the targets: keep it beside the card, facing the light")
+            val ambient = lockAndReadAmbient(node.unicast, LightSetting(5600, 0), listOfNotNull(camera, reference))
+                ?: return@runTask
             val points = mutableListOf<CalPoint>()
             val settle = mutableMapOf<Double, Settle>()
             var minShare = 1.0
             for (k in CALIBRATION_TARGETS) {
                 rig.apply(node.unicast, LightSetting(k.toInt(), 0))
-                val m = readLight(ambient, calibrated = false) ?: return@runTask
-                points += CalPoint(k, m.c)
+                val m = readLight(camera, ambient[0], calibrated = false) ?: return@runTask
+                val ref = reference?.let { readLight(it, ambient[1]) ?: return@runTask }
+                points += CalPoint(ref?.c?.cct ?: k, m.c, targetDuv = ref?.c?.duv ?: 0.0, setKelvin = k)
                 settle[k] = m.settle
                 minShare = minOf(minShare, m.share)
-                line("%,d K → read %s  (light %.0f%% of the card)  %s"
-                    .format(k.toInt(), fmt(m.c), m.share * 100, fmtSettle(m.settle)))
+                line("%,d K → read %s%s  (light %.0f%% of the card)  %s".format(
+                    k.toInt(), fmt(m.c), ref?.let { ", IM150 ${fmt(it.c)}" } ?: "", m.share * 100, fmtSettle(m.settle)))
             }
             rig.set(node.unicast, start)
             try {
-                val cal = Calibration(points, source = node.name)
+                val cal = Calibration(points, source = node.name + if (reference != null) " + IM150" else "")
                 val warnings = buildList {
                     // Ambient is subtracted, but its noise isn't: the more of the card's
                     // light comes from the room, the less the readings can be trusted.
@@ -498,11 +604,13 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     fun startGmTest() {
         val start = _state.value.light ?: return
         val node = _state.value.selectedNode ?: return
+        val probe = Probe(im150 = _state.value.meter == ColourMeter.IM150)
         runTask("G/M response of ${node.name} at ${start.cct} K") {
-            val ambient = lockAndReadAmbient(node.unicast, LightSetting(start.cct, 0)) ?: return@runTask
+            val ambient = lockAndReadAmbient(node.unicast, LightSetting(start.cct, 0), listOf(probe))?.single()
+                ?: return@runTask
             for (g in listOf(0, node.model.limits.gmMin, node.model.limits.gmMax)) {
                 rig.apply(node.unicast, LightSetting(start.cct, g))
-                val m = readLight(ambient) ?: return@runTask
+                val m = readLight(probe, ambient) ?: return@runTask
                 line("G/M %+4d → %s  %s".format(g, fmt(m.c), fmtSettle(m.settle)))
             }
             rig.set(node.unicast, start)
@@ -516,8 +624,8 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
 
     fun dismissTask() = _state.update { it.copy(task = null) }
 
-    private fun runTask(title: String, block: suspend () -> Unit) {
-        if (!_state.value.canRunLightTask) return
+    private fun runTask(title: String, allowed: Boolean = _state.value.canRunLightTask, block: suspend () -> Unit) {
+        if (!allowed) return
         setLive(false)
         taskJob = viewModelScope.launch {
             _state.update { it.copy(task = TaskUi(title), measuring = true) }
@@ -536,44 +644,75 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** A linear sample of the light: the camera's RGB of the card, or the IM150's XYZ (Y in lux). */
+    private class Tri(val v: DoubleArray, val level: Double, val clipped: Boolean)
+
+    /** What a light task reads the light with: the camera on the card, or the IM150. */
+    private inner class Probe(val im150: Boolean) {
+        val label: String get() = if (im150) "IM150" else "camera"
+
+        /** Camera: exposure is settled on the lit card, then locked so samples can be subtracted. */
+        suspend fun prepare(): Boolean {
+            if (im150) return true
+            if (meter.measure(4).warning == ExposureWarning.CLIPPED) {
+                finish(false, "Card is overexposed even at minimum exposure — lower brightness or move back")
+                return false
+            }
+            meter.setExposureLock(true)
+            return true
+        }
+
+        suspend fun sample(): Tri {
+            if (!im150) return meter.sample(4).let { Tri(it.rgb, it.level, it.warning == ExposureWarning.CLIPPED) }
+            val s = try {
+                this@MeterViewModel.im150.next()
+            } catch (e: TimeoutCancellationException) {
+                throw IllegalStateException("No reading from the IM150")
+            }
+            val xyz = xyToXyz(s.xy)
+            return Tri(DoubleArray(3) { xyz[it] * s.lux }, 0.0, false)
+        }
+
+        /** The reading for [light], the light alone, out of the [on] sample. */
+        fun reading(light: DoubleArray, on: Tri): Reading {
+            if (!im150) return meter.toReading(light, on.level, ExposureWarning.NONE)
+            val xy = xyzToXy(light[0], light[1], light[2])
+            return Reading(xy, cctDuv(xy), MeterSource.IM150, level = 0.0, warning = ExposureWarning.NONE, lux = light[1])
+        }
+    }
+
     /**
-     * Sets the light, lets exposure settle on the lit card and locks it, then reads
-     * the card with the light off. Returns the ambient sample, or null if it failed.
+     * Sets the light and gets each probe ready (the camera's exposure locked on the lit
+     * card), then reads each with the light off. Returns their ambient samples in the
+     * same order, or null if it failed.
      */
-    private suspend fun lockAndReadAmbient(unicast: Int, setting: LightSetting): CameraMeter.Sample? {
+    private suspend fun lockAndReadAmbient(unicast: Int, setting: LightSetting, probes: List<Probe>): List<Tri>? {
         rig.apply(unicast, setting)
         delay(SETTLE_MS)
-        if (meter.measure(4).warning == ExposureWarning.CLIPPED) {
-            finish(false, "Card is overexposed even at minimum exposure — lower brightness or move back")
-            return null
-        }
-        meter.setExposureLock(true)
-        val lit = meter.sample(4)
+        for (p in probes) if (!p.prepare()) return null
+        val lit = probes.map { it.sample() }
         rig.lightOff(unicast)
-        val ambient = readAmbient(lit)
+        val ambient = probes.mapIndexed { i, p -> readAmbient(p, lit[i]) }
         rig.restore(unicast)
-        line("Exposure locked; ambient measured with the light off")
+        line(if (probes.any { !it.im150 }) "Exposure locked; ambient measured with the light off"
+            else "Ambient measured with the light off")
         return ambient
     }
 
     /**
-     * Samples the card with the light off until two samples agree (so the light has
-     * finished fading out), or until the timeout, and returns their mean.
+     * Samples with the light off until two samples agree (so the light has finished
+     * fading out), or until the timeout, and returns their mean.
      */
-    private suspend fun readAmbient(lit: CameraMeter.Sample): CameraMeter.Sample {
+    private suspend fun readAmbient(probe: Probe, lit: Tri): Tri {
         val start = SystemClock.elapsedRealtime()
         delay(MIN_SETTLE_MS)
-        var prev = meter.sample(4)
+        var prev = probe.sample()
         while (true) {
-            val cur = meter.sample(4)
-            val settled = ambientSettled(prev.rgb, cur.rgb, lit.rgb)
+            val cur = probe.sample()
+            val settled = ambientSettled(prev.v, cur.v, lit.v)
             if (settled || SystemClock.elapsedRealtime() - start >= SETTLE_TIMEOUT_MS) {
-                if (!settled) line("Ambient was still changing after ${SETTLE_TIMEOUT_MS / 1000} s")
-                return CameraMeter.Sample(
-                    DoubleArray(3) { (prev.rgb[it] + cur.rgb[it]) / 2 },
-                    maxOf(prev.level, cur.level),
-                    cur.warning,
-                )
+                if (!settled) line("Ambient (${probe.label}) was still changing after ${SETTLE_TIMEOUT_MS / 1000} s")
+                return Tri(DoubleArray(3) { (prev.v[it] + cur.v[it]) / 2 }, maxOf(prev.level, cur.level), cur.clipped)
             }
             prev = cur
         }
@@ -586,12 +725,12 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
      * as not yet settled, since the light may still be fading in; at the timeout the
      * task fails with that reason.
      */
-    private suspend fun readLight(ambient: CameraMeter.Sample, calibrated: Boolean = true): LightRead? {
+    private suspend fun readLight(probe: Probe, ambient: Tri, calibrated: Boolean = true): LightRead? {
         val start = SystemClock.elapsedRealtime()
         delay(MIN_SETTLE_MS)
         var prev: Pair<CctDuv, Double>? = null
         while (true) {
-            val cur = readLightOnce(ambient, calibrated)
+            val cur = readLightOnce(probe, ambient, calibrated)
             val ms = SystemClock.elapsedRealtime() - start
             val ok = cur.getOrNull()
             if (ok == null) {
@@ -613,22 +752,22 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** One reading of the light: its colour and its share of the card, or why it failed. */
-    private suspend fun readLightOnce(ambient: CameraMeter.Sample, calibrated: Boolean): Result<Pair<CctDuv, Double>> {
-        val on = meter.sample(4)
-        if (on.warning == ExposureWarning.CLIPPED) {
+    /** One reading of the light: its colour and its share of the total, or why it failed. */
+    private suspend fun readLightOnce(probe: Probe, ambient: Tri, calibrated: Boolean): Result<Pair<CctDuv, Double>> {
+        val on = probe.sample()
+        if (on.clipped) {
             return Result.failure(IllegalStateException("Card clipped with the light on — move the card or lower brightness"))
         }
-        val iso = AmbientSubtraction.isolate(on.rgb, ambient.rgb)
+        val iso = AmbientSubtraction.isolate(on.v, ambient.v)
         if (iso.lightShare < AmbientSubtraction.MIN_SHARE) {
             return Result.failure(IllegalStateException(
-                "The light is only %.0f%% of what's on the card — move it closer or raise brightness"
-                    .format(iso.lightShare * 100)
+                "The light is only %.0f%% of what the %s sees — move it closer or raise brightness"
+                    .format(iso.lightShare * 100, probe.label)
             ))
         }
-        val r = meter.toReading(iso.lightRgb, on.level, ExposureWarning.NONE)
+        val r = probe.reading(iso.lightRgb, on)
         _state.update { it.copy(reading = r) }
-        return Result.success((if (calibrated) _state.value.corrected(r.xy) else r.cctDuv) to iso.lightShare)
+        return Result.success((if (calibrated) _state.value.corrected(r.xy, r.source) else r.cctDuv) to iso.lightShare)
     }
 
     private fun fmtSettle(s: Settle): String =

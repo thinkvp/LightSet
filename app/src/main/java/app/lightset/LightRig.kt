@@ -10,6 +10,7 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.os.ParcelUuid
 import android.util.Log
+import app.lightset.ble.Im150
 import app.lightset.ble.NanliteProtocol
 import app.lightset.color.LightSetting
 import app.lightset.mesh.LightModel
@@ -31,6 +32,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 class LightSetApp : Application() {
     val rig by lazy { LightRig(this) }
+    val im150 by lazy { Im150(this) }
 }
 
 /**

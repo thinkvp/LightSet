@@ -15,6 +15,13 @@ lights over Bluetooth until their colour matches it.
   subtracted (the light blinks off once to read the ambient), and adjusts until it's
   within 5 mired and 1.5 tint. Brightness is left where you set it. If a light can't
   reach the tint (no G/M, or out of green at warm CCTs), it matches CCT and suggests a gel.
+- **IM150:** the Illuminati IM150 colour meter can be used instead of the phone (Phone /
+  IM150 at the top of Match) for readings, references and Match. When it's connected,
+  calibration uses its reading of the light as the target instead of the light's setting.
+  The meter takes one connection at a time, so close the Illuminati app first.
+- **Exposure:** the bar at the bottom of Match works out aperture, ISO, shutter angle and
+  ND from the IM150's lux (or a light value set by hand), for a chosen frame rate. Lock
+  the settings to keep; if they can't all be met, it says how much light to add or cut.
 - **Lights:** adds Nanlite lights to its own Bluetooth Mesh network (after a Bluetooth
   reset on the light), then controls brightness, CCT, G/M and colour (HSI) for each,
   with online/offline status. Each light can be switched off and back on to its

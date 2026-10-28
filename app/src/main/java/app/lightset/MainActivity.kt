@@ -45,6 +45,7 @@ import app.lightset.ui.LightsScreen
 import app.lightset.ui.LightsViewModel
 import app.lightset.ui.MeterScreen
 import app.lightset.ui.MeterViewModel
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 private val PERMISSIONS = buildList {
@@ -62,10 +63,17 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val rig = (application as LightSetApp).rig
+        val im150 = (application as LightSetApp).im150
         // While the app is visible, keep a connection to the light (shows online/offline).
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 if (hasPermissions()) rig.keepConnected()
+            }
+        }
+        // And to the IM150 meter, once one is in use.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                if (hasPermissions()) im150.wanted.collectLatest { if (it) im150.keepConnected() }
             }
         }
         setContent {

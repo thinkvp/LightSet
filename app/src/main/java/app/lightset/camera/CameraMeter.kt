@@ -114,7 +114,7 @@ class CameraMeter(context: Context) {
             .let { sizes -> sizes.firstOrNull { it.width * 3 == it.height * 4 } ?: sizes.first() }
         val description = when (source) {
             MeterSource.RAW -> "RAW sensor data, camera $id"
-            MeterSource.PROCESSED -> "No RAW on this phone — processed image (approximate absolute values, fine for matching)"
+            else -> "No RAW on this phone — processed image (approximate absolute values, fine for matching)"
         }
         return Info(id, source, preview, description).also { info = it }
     }
@@ -132,7 +132,7 @@ class CameraMeter(context: Context) {
                 val size = map.getOutputSizes(ImageFormat.RAW_SENSOR).maxBy { it.width * it.height }
                 ImageReader.newInstance(size.width, size.height, ImageFormat.RAW_SENSOR, 4)
             }
-            MeterSource.PROCESSED -> {
+            else -> {
                 val size = map.getOutputSizes(ImageFormat.YUV_420_888)
                     .filter { it.width <= 1280 }
                     .maxBy { it.width * it.height }
@@ -225,7 +225,7 @@ class CameraMeter(context: Context) {
         val source = checkNotNull(info).source
         val xy: Xy = when (source) {
             MeterSource.RAW -> colorModel!!.toXy(rgb)
-            MeterSource.PROCESSED -> ProcessedColorModel.toXy(rgb)
+            else -> ProcessedColorModel.toXy(rgb)
         }
         return Reading(xy, cctDuv(xy), source, level, warning)
     }
@@ -254,7 +254,7 @@ class CameraMeter(context: Context) {
                 withContext(Dispatchers.Default) {
                     when (info.source) {
                         MeterSource.RAW -> analyseRaw(image, result)
-                        MeterSource.PROCESSED -> analyseYuv(image)
+                        else -> analyseYuv(image)
                     }
                 }
             } finally {

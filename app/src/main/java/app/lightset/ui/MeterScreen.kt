@@ -67,7 +67,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import app.lightset.LightRig
+import app.lightset.ble.Im150
 import app.lightset.camera.ExposureWarning
 import app.lightset.camera.MeterSource
 import app.lightset.camera.Reading
@@ -77,6 +79,7 @@ import app.lightset.color.Delta
 import app.lightset.color.Xy
 import app.lightset.color.delta
 import app.lightset.data.Reference
+import app.lightset.exposure.Exposure
 import java.text.DateFormat
 import java.util.Date
 import kotlin.math.abs
@@ -87,17 +90,22 @@ private const val MATCH_MIRED = 5.0
 private const val MATCH_DUV = 0.0015
 
 @Composable
-fun MeterScreen(vm: MeterViewModel) {
+fun MeterScreen(vm: MeterViewModel, exposureVm: ExposureViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val exposure by exposureVm.state.collectAsStateWithLifecycle()
     var saving by rememberSaveable { mutableStateOf(false) }
     val info = remember { vm.cameraInfo() }
-    val shown = state.reading?.let { state.corrected(it.xy) }
+    val shown = state.reading?.let { state.corrected(it.xy, it.source) }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Header(state, vm)
 
-        // Camera and reading side by side, controls directly beneath: always on screen.
-        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.Top) {
+        if (state.meter == ColourMeter.IM150) {
+            // No camera needed: the meter's status in its place, and the reading full width.
+            Im150Strip(state, exposure.liveLux, onRetry = vm::retryIm150, modifier = Modifier.padding(top = 8.dp))
+            Readout(state.reading, shown, state, Modifier.fillMaxWidth().padding(top = 10.dp))
+        } else Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.Top) {
+            // Camera and reading side by side, controls directly beneath: always on screen.
             val aspect = info?.previewSize?.let { it.height.toFloat() / it.width } ?: 0.75f
             Box(
                 Modifier
@@ -135,13 +143,13 @@ fun MeterScreen(vm: MeterViewModel) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Button(onClick = vm::measureOnce, enabled = state.cameraOpen && !state.busy && !state.live) {
+            Button(onClick = vm::measureOnce, enabled = state.meterReady && !state.busy && !state.live) {
                 Text(if (state.measuring && state.task?.running != true) "Measuring…" else "Measure")
             }
             FilterChip(
                 selected = state.live,
                 onClick = { vm.setLive(!state.live) },
-                enabled = state.cameraOpen && state.task?.running != true,
+                enabled = state.meterReady && state.task?.running != true,
                 label = { Text("Live") },
             )
             Spacer(Modifier.weight(1f))
@@ -155,11 +163,12 @@ fun MeterScreen(vm: MeterViewModel) {
             Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            ReferencePicker(state.references, state.active, state::corrected, vm::selectReference, vm::deleteReference)
+            ReferencePicker(state.references, state.active, { state.corrected(it.xy, it.source) },
+                vm::selectReference, vm::deleteReference)
 
             state.calSession?.let { session ->
                 CalibrationCard(
-                    session, measuring = state.measuring, cameraOpen = state.cameraOpen,
+                    session, measuring = state.measuring, cameraOpen = state.cameraOpen, im150 = state.im150Connected,
                     onSelect = vm::selectCalStep, onMeasure = vm::measureCalStep,
                     onSave = vm::finishManualCalibration, onCancel = vm::cancelCalibration,
                 )
@@ -170,6 +179,8 @@ fun MeterScreen(vm: MeterViewModel) {
 
             state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         }
+        HorizontalDivider()
+        ExposureBar(exposure, exposureVm)
     }
 
     if (saving) {
@@ -183,8 +194,19 @@ private fun Header(state: MeterUiState, vm: MeterViewModel) {
     var guide by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text("Match", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-        LightStatusChip(state.selectedNode?.name?.take(14) ?: "No light", state.lightStatus, onRetry = vm::reconnectLight)
+        // Which meter reads colour.
+        for (m in ColourMeter.entries) {
+            FilterChip(
+                selected = state.meter == m,
+                onClick = { vm.setMeter(m) },
+                enabled = !state.busy,
+                label = { Text(if (m == ColourMeter.PHONE) "Phone" else "IM150", maxLines = 1, softWrap = false) },
+                modifier = Modifier.padding(end = 6.dp),
+            )
+        }
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+            LightStatusChip(state.selectedNode?.name?.take(14) ?: "No light", state.lightStatus, onRetry = vm::reconnectLight)
+        }
         Box {
             IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More") }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -196,6 +218,13 @@ private fun Header(state: MeterUiState, vm: MeterViewModel) {
                     enabled = state.canRunLightTask,
                     onClick = { menu = false; vm.startGmTest() },
                 )
+                if (state.meter == ColourMeter.IM150 || state.im150Status != Im150.Status.OFF) {
+                    DropdownMenuItem(
+                        text = { Text("Stop using the IM150") },
+                        enabled = !state.busy,
+                        onClick = { menu = false; vm.forgetIm150() },
+                    )
+                }
             }
         }
     }
@@ -212,7 +241,7 @@ private val GAUGE_CCT = 2000..10000
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun Readout(reading: Reading?, shown: CctDuv?, state: MeterUiState, modifier: Modifier) {
-    val ref = state.active?.let { state.corrected(it.xy) }
+    val ref = state.active?.let { state.corrected(it.xy, it.source) }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
@@ -260,7 +289,9 @@ private fun Readout(reading: Reading?, shown: CctDuv?, state: MeterUiState, modi
                 ExposureWarning.TOO_DARK -> Pill("Too dark", WarnAmber)
                 else -> Unit
             }
-            if (state.calibration == null) Pill("Uncalibrated", MaterialTheme.colorScheme.surfaceVariant)
+            if (state.meter == ColourMeter.PHONE && state.calibration == null) {
+                Pill("Uncalibrated", MaterialTheme.colorScheme.surfaceVariant)
+            }
         }
     }
 }
@@ -269,7 +300,7 @@ private fun Readout(reading: Reading?, shown: CctDuv?, state: MeterUiState, modi
 private fun ReferencePicker(
     refs: List<Reference>,
     active: Reference?,
-    corrected: (Xy) -> CctDuv,
+    corrected: (Reference) -> CctDuv,
     onSelect: (String?) -> Unit,
     onDelete: (String) -> Unit,
 ) {
@@ -286,7 +317,7 @@ private fun ReferencePicker(
         ) {
             Box(
                 Modifier.padding(end = 12.dp).size(26.dp).background(
-                    active?.let { corrected(it.xy).let { c -> tintedColor(c.cct, c.duv) } } ?: Color.Transparent, CircleShape,
+                    active?.let { corrected(it).let { c -> tintedColor(c.cct, c.duv) } } ?: Color.Transparent, CircleShape,
                 )
             )
             Column(Modifier.weight(1f)) {
@@ -294,7 +325,7 @@ private fun ReferencePicker(
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(
                     when {
-                        active != null -> corrected(active.xy).let { "${active.name} · ${formatKelvin(it.cct)} ${formatTint(it.duv)}" }
+                        active != null -> corrected(active).let { "${active.name} · ${formatKelvin(it.cct)} ${formatTint(it.duv)}" }
                         refs.isEmpty() -> "Measure the ambient, then Save ref"
                         else -> "None selected"
                     },
@@ -305,13 +336,14 @@ private fun ReferencePicker(
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             refs.forEach { ref ->
-                val c = corrected(ref.xy)
+                val c = corrected(ref)
                 DropdownMenuItem(
                     leadingIcon = { Box(Modifier.size(18.dp).background(tintedColor(c.cct, c.duv), CircleShape)) },
                     text = {
                         Column {
                             Text(ref.name, fontWeight = if (ref.id == active?.id) FontWeight.SemiBold else null)
-                            Text("${formatKelvin(c.cct)} ${formatTint(c.duv)} · ${fmt.format(Date(ref.createdAt))}",
+                            Text("${formatKelvin(c.cct)} ${formatTint(c.duv)} · " +
+                                (if (ref.source == MeterSource.IM150) "IM150 · " else "") + fmt.format(Date(ref.createdAt)),
                                 style = MaterialTheme.typography.bodySmall)
                         }
                     },
@@ -499,6 +531,7 @@ private fun CalibrationCard(
     session: CalSession,
     measuring: Boolean,
     cameraOpen: Boolean,
+    im150: Boolean,
     onSelect: (Int) -> Unit,
     onMeasure: () -> Unit,
     onSave: () -> Unit,
@@ -508,7 +541,9 @@ private fun CalibrationCard(
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("Calibrate manually", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Use one trusted light at G/M 0 as the only light on the card. Keep the phone, card and " +
+                if (im150) "The IM150 is connected, so its reading is the truth for each step and any light works: " +
+                    "put it beside the card, facing the light. Keep everything still for each step. Tap a step to redo it."
+                else "Use one trusted light at G/M 0 as the only light on the card. Keep the phone, card and " +
                     "distance the same for every step. Tap a step to redo it.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -526,8 +561,14 @@ private fun CalibrationCard(
                         .padding(horizontal = 8.dp, vertical = 6.dp),
                 ) {
                     Text("Set ${formatKelvin(k)}, G/M 0", Modifier.weight(1f))
-                    Text(r?.let { "read ${formatKelvin(it.cct)} ${formatTint(it.duv)}" } ?: "—",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(r?.let { "read ${formatKelvin(it.cct)} ${formatTint(it.duv)}" } ?: "—",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        session.references[i]?.let {
+                            Text("IM150 ${formatKelvin(it.cct)} ${formatTint(it.duv)}",
+                                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
                 }
             }
             session.error?.let { Text(it, color = WarnAmber) }
@@ -562,9 +603,9 @@ private fun CalibrationMenuItems(
         onClick = {},
     )
     DropdownMenuItem(
-        text = { Text("Calibrate automatically, with $lightName") },
-        enabled = canStart && state.canRunLightTask,
-        onClick = { onPicked(); onGuide() },
+        text = { Text("Calibrate automatically, with $lightName" + if (state.im150Connected) " + IM150" else "") },
+        enabled = canStart && state.lightReady,
+        onClick = { onPicked(); vm.useCameraForCalibration(); onGuide() },
     )
     DropdownMenuItem(text = { Text("Calibrate manually") }, enabled = canStart,
         onClick = { onPicked(); vm.startCalibration() })
@@ -598,6 +639,8 @@ private fun CalibrationDialogs(
                         "Fill the box with a white or grey card.",
                         "Make $lightName the main light on the card: turn its brightness up, dim other lights.",
                         "Keep the phone and card still for about 20 s while it steps 2,700–6,500 K. The light blinks off once.",
+                        if (state.im150Connected) "The IM150's readings are the targets: put it beside the card, facing the light."
+                        else "Without the IM150, the light's settings are taken as exact.",
                         "Nothing is saved until you review the result.",
                     )) {
                         Row {
@@ -608,7 +651,7 @@ private fun CalibrationDialogs(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { closeGuide(); vm.startAutoCalibration() }, enabled = state.canRunLightTask) {
+                TextButton(onClick = { closeGuide(); vm.startAutoCalibration() }, enabled = state.canAutoCalibrate) {
                     Text("Start")
                 }
             },
@@ -645,16 +688,23 @@ private fun CalibrationReview(review: CalReview, current: Calibration?, vm: Mete
                     Text("Spread", Modifier.weight(0.9f), style = MaterialTheme.typography.labelSmall, color = muted)
                 }
             }
-            cal.points.sortedBy { it.targetKelvin }.forEach { p ->
+            cal.points.sortedBy { it.setKelvin }.forEach { p ->
                 Row(verticalAlignment = Alignment.Top) {
-                    Text(formatKelvin(p.targetKelvin), Modifier.weight(0.8f), style = MaterialTheme.typography.bodyMedium)
+                    Column(Modifier.weight(0.8f)) {
+                        Text(formatKelvin(p.setKelvin), style = MaterialTheme.typography.bodyMedium)
+                        // A reference meter's reading of the light, when that was the truth.
+                        if (p.targetKelvin != p.setKelvin || p.targetDuv != 0.0) {
+                            Text("IM150 ${formatKelvin(p.targetKelvin)}", style = MaterialTheme.typography.labelSmall, color = muted)
+                            Text(formatTint(p.targetDuv), style = MaterialTheme.typography.labelSmall, color = muted)
+                        }
+                    }
                     ReadingCell(p.measured, Modifier.weight(1f))
                     if (current != null) {
-                        val old = current.points.firstOrNull { it.targetKelvin == p.targetKelvin }?.measured
+                        val old = current.points.firstOrNull { it.setKelvin == p.setKelvin }?.measured
                         if (old != null) ReadingCell(old, Modifier.weight(1f)) else Text("—", Modifier.weight(1f))
                     }
                     if (review.settle.isNotEmpty()) {
-                        val s = review.settle[p.targetKelvin]
+                        val s = review.settle[p.setKelvin]
                         if (s != null) SettleCell(s, Modifier.weight(0.9f)) else Text("—", Modifier.weight(0.9f))
                     }
                 }
@@ -680,6 +730,44 @@ private fun CalibrationReview(review: CalReview, current: Calibration?, vm: Mete
                 FilledTonalButton(onClick = vm::saveReviewedCalibration) {
                     Text(if (current != null) "Replace current" else "Save")
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Where the camera goes when the IM150 is the meter: connection and battery, and its
+ * live light level. Tap to retry when it isn't connected.
+ */
+@Composable
+private fun Im150Strip(state: MeterUiState, liveLux: Double?, onRetry: () -> Unit, modifier: Modifier = Modifier) {
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val (dot, status) = when (state.im150Status) {
+        Im150.Status.CONNECTED -> GoodGreen to ("Connected" + (state.im150Battery?.let { " · battery $it%" } ?: ""))
+        Im150.Status.SEARCHING -> WarnAmber to "Finding the meter…"
+        Im150.Status.OFF -> Color(0xFF9E9E9E) to ((state.im150Error ?: "Not connected") + " · tap to retry")
+    }
+    Row(
+        modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
+            .clickable(enabled = state.im150Status == Im150.Status.OFF, onClick = onRetry)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(10.dp).background(dot, CircleShape))
+        Column(Modifier.weight(1f).padding(start = 10.dp)) {
+            Text("IM150", style = MaterialTheme.typography.titleSmall)
+            Text(status, style = MaterialTheme.typography.bodySmall, color = muted)
+            if (state.im150Status == Im150.Status.OFF) {
+                Text("Turn the meter on and close the Illuminati app: it takes one connection at a time.",
+                    style = MaterialTheme.typography.bodySmall, color = muted)
+            }
+        }
+        if (state.im150Connected && liveLux != null) {
+            Column(horizontalAlignment = Alignment.End) {
+                Text("%,d lux".format(liveLux.roundToInt()), style = MaterialTheme.typography.titleMedium)
+                Text("EV %.1f".format(Exposure.ev100(liveLux)), style = MaterialTheme.typography.bodySmall, color = muted)
             }
         }
     }
