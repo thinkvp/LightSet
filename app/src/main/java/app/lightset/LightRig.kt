@@ -330,6 +330,14 @@ class LightRig(private val app: Application) {
         _states.update { it - unicast }
     }
 
+    /** Puts the lights in this order (by address); any not listed keep their place at the end. */
+    fun reorder(unicasts: List<Int>) {
+        val byId = _nodes.value.associateBy { it.unicast }
+        val list = unicasts.mapNotNull { byId[it] } + _nodes.value.filter { it.unicast !in unicasts }
+        mesh.save(list)
+        _nodes.value = list
+    }
+
     // --- Settings --------------------------------------------------------------
 
     /** Sets brightness, turning the light on if it was off. */

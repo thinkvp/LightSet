@@ -18,6 +18,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.MoreVert
@@ -50,7 +51,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import app.lightset.LightRig
+import app.lightset.ble.Im150
 import app.lightset.mesh.LightModel
 import app.lightset.data.Scene
 import app.lightset.mesh.MeshNode
@@ -58,8 +61,10 @@ import java.text.DateFormat
 import java.util.Date
 
 @Composable
-fun LightsScreen(vm: LightsViewModel) {
+fun LightsScreen(vm: LightsViewModel, exposureVm: ExposureViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val exposure by exposureVm.state.collectAsStateWithLifecycle()
+    var showLog by rememberSaveable { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
         Column(
             Modifier
@@ -76,6 +81,7 @@ fun LightsScreen(vm: LightsViewModel) {
                         Text(" Add light")
                     }
                 }
+                LightsMenu(onLog = { showLog = true })
             }
             // Only problems the user can fix (e.g. Bluetooth off); per-light status is the dot.
             if (state.status == LightRig.Status.OFFLINE && state.lights.isNotEmpty() && state.statusError != null) {
@@ -86,13 +92,30 @@ fun LightsScreen(vm: LightsViewModel) {
                 )
             }
             state.add?.let { AddLightCard(it, vm) }
-            state.lights.forEach { node ->
-                LightControlCard(node, state, vm)
+            // Drag a light by its handle to reorder; Match lists lights in this order.
+            ReorderableColumn(state.lights, key = { it.unicast }, onReorder = vm::reorder) { node, handle ->
+                LightControlCard(node, state, vm, handle)
             }
-            Diagnostics(state)
+        }
+        // Exposure while setting key and fill: it needs the IM150's light level.
+        if (exposure.im150Status == Im150.Status.CONNECTED) {
+            HorizontalDivider()
+            ExposureBar(exposure, exposureVm)
         }
         HorizontalDivider()
         SceneBar(state, vm)
+    }
+    if (showLog) DiagnosticsDialog(state, onDismiss = { showLog = false })
+}
+
+@Composable
+private fun LightsMenu(onLog: () -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More") }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(text = { Text("Diagnostics log") }, onClick = { open = false; onLog() })
+        }
     }
 }
 
@@ -167,7 +190,7 @@ fun lightStatus(node: MeshNode, state: LightsUiState): LightRig.Status = when {
  * controls. Changes are sent as you move the controls.
  */
 @Composable
-private fun LightControlCard(node: MeshNode, state: LightsUiState, vm: LightsViewModel) {
+private fun LightControlCard(node: MeshNode, state: LightsUiState, vm: LightsViewModel, handle: Modifier = Modifier) {
     val limits = node.model.limits
     val cctRange = limits.cctMin..limits.cctMax
     val status = lightStatus(node, state)
@@ -182,8 +205,14 @@ private fun LightControlCard(node: MeshNode, state: LightsUiState, vm: LightsVie
     fun setHsi(hue: Int = l.hue, sat: Int = l.sat) = send(l.copy(hue = hue, sat = sat, mode = LightRig.Mode.HSI))
 
     Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(start = 12.dp, top = 4.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(Modifier.padding(start = 4.dp, top = 4.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.DragHandle,
+                    contentDescription = "Drag to reorder ${node.name}",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = handle.padding(horizontal = 4.dp, vertical = 12.dp),
+                )
                 Row(
                     Modifier.weight(1f).clickable { expanded = !expanded }.padding(vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -223,7 +252,7 @@ private fun LightControlCard(node: MeshNode, state: LightsUiState, vm: LightsVie
                 Text(it.second, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
             }
             if (!expanded) return@Column
-            Column(Modifier.padding(end = 12.dp)) {
+            Column(Modifier.padding(start = 8.dp, end = 12.dp)) {
                 if (node.model.rgb) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilterChip(selected = !hsi, onClick = { set() }, enabled = online, label = { Text("White") })
@@ -401,21 +430,18 @@ private fun HsiControls(l: LightRig.LightState, enabled: Boolean, onHue: (Int) -
     }
 }
 
-/** Raw Bluetooth log, folded away. */
+/** Raw Bluetooth log, from the Lights menu. */
 @Composable
-private fun Diagnostics(state: LightsUiState) {
-    var open by rememberSaveable { mutableStateOf(false) }
-    Row(
-        Modifier.fillMaxWidth().clickable { open = !open }.padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("Diagnostics log", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-        Icon(if (open) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = null)
-    }
-    if (!open) return
-    HorizontalDivider()
-    SelectionContainer {
-        Text(state.log.takeLast(80).joinToString("\n").ifEmpty { "(empty)" },
-            fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 14.sp)
-    }
+private fun DiagnosticsDialog(state: LightsUiState, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Diagnostics log") },
+        text = {
+            SelectionContainer(Modifier.verticalScroll(rememberScrollState())) {
+                Text(state.log.takeLast(80).joinToString("\n").ifEmpty { "(empty)" },
+                    fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 14.sp)
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
 }

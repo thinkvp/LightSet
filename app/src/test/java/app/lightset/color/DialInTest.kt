@@ -55,6 +55,19 @@ class DialInTest {
     }
 
     @Test
+    fun refinesPastGoodEnough() {
+        // Noise-free, so the closest setting found should land inside the fine tolerance.
+        val light = SimLight(miredOffset = 12.0, miredSlope = 0.85, duvOffset = 0.003, duvPerGm = 3.5e-4)
+        for (target in listOf(CctDuv(3200.0, 0.0), CctDuv(5530.0, -0.0022), CctDuv(4300.0, 0.004))) {
+            val (step, _) = run(target, light)
+            assertTrue("$target: $step", step is DialIn.Step.Matched)
+            val d = delta(light.measure((step as DialIn.Step.Matched).setting), target)
+            assertTrue("$target: ${d.mired} mired", abs(d.mired) <= 2.0)
+            assertTrue("$target: ${d.duv} Duv", abs(d.duv) <= 0.0005)
+        }
+    }
+
+    @Test
     fun reportsOutOfRange() {
         val warmOnly = LightLimits(2700, 6500, -100, 100)
         val (step, _) = run(CctDuv(2400.0, 0.0), SimLight(0.0, 1.0, 0.0, 2.4e-4), warmOnly)

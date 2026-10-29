@@ -44,7 +44,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private const val DIAL_MAX_STEPS = 8
+private const val DIAL_MAX_STEPS = 10
 /** Time for auto-exposure to settle on the lit card before it's locked. */
 private const val SETTLE_MS = 900L
 /** Minimum wait after changing a light before the first reading. */
@@ -127,6 +127,10 @@ data class MeterUiState(
     val light: LightRig.LightState? = null,
     val lightStatus: LightRig.Status = LightRig.Status.OFFLINE,
     val lightError: String? = null,
+    /** Lights answering right now. */
+    val reachable: Set<Int> = emptySet(),
+    /** Lights the app has switched on. */
+    val lightsOn: Set<Int> = emptySet(),
     val meter: ColourMeter = ColourMeter.PHONE,
     val im150Status: Im150.Status = Im150.Status.OFF,
     val im150Battery: Int? = null,
@@ -192,9 +196,13 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                     st == LightRig.Status.ONLINE || st == LightRig.Status.CONNECTING -> LightRig.Status.CONNECTING
                     else -> LightRig.Status.OFFLINE
                 }
-                SelectedLight(nodes, u, u?.let { states[it] }, lightStatus)
+                SelectedLight(nodes, u, u?.let { states[it] }, lightStatus, if (st == LightRig.Status.ONLINE) reach else emptySet(),
+                    states.filterValues { it.on }.keys)
             }.collect { sl ->
-                _state.update { it.copy(lights = sl.nodes, selected = sl.unicast, light = sl.state, lightStatus = sl.status) }
+                _state.update {
+                    it.copy(lights = sl.nodes, selected = sl.unicast, light = sl.state, lightStatus = sl.status,
+                        reachable = sl.reachable, lightsOn = sl.on)
+                }
             }
         }
         viewModelScope.launch { rig.lastError.collect { e -> _state.update { it.copy(lightError = e) } } }
@@ -227,6 +235,8 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
 
     private class SelectedLight(
         val nodes: List<MeshNode>, val unicast: Int?, val state: LightRig.LightState?, val status: LightRig.Status,
+        val reachable: Set<Int>,
+        val on: Set<Int>,
     )
 
     fun selectLight(unicast: Int) {
@@ -405,6 +415,12 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setLightOn(on: Boolean) = lightCall { target()?.let { rig.setOn(it, on) } }
 
+    /** The master switch: every connected light off, or back on at its settings. */
+    fun setAllOn(on: Boolean) = lightCall {
+        if (_state.value.task?.running == true) return@lightCall
+        for (u in _state.value.reachable) rig.setOn(u, on)
+    }
+
     fun reconnectLight() = lightCall { rig.reconnect() }
 
     private fun lightCall(block: suspend () -> Unit) {
@@ -533,8 +549,14 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 line("$i  ${setting.cct} K, G/M %+d → %s  (%+.0f mired, tint %+.1f)  %s"
                     .format(setting.gm, fmt(m.c), dd.mired, dd.duv * 1000, fmtSettle(m.settle)))
                 when (val step = d.next(m.c)) {
-                    is DialIn.Step.Matched ->
+                    is DialIn.Step.Matched -> {
+                        // The closest reading may have been an earlier step: go back to it.
+                        if (step.setting != setting) {
+                            line("Back to the closest: ${step.setting.cct} K, G/M %+d".format(step.setting.gm))
+                            rig.apply(node.unicast, step.setting)
+                        }
                         return@runTask finish(true, "Matched: ${step.setting.cct} K, G/M %+d".format(step.setting.gm))
+                    }
                     is DialIn.Step.Partial -> return@runTask finish(false, step.reason)
                     is DialIn.Step.OutOfRange -> return@runTask finish(false, step.reason)
                     is DialIn.Step.Send -> {

@@ -1,6 +1,7 @@
 package app.lightset.color
 
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 /** What a light can be set to. [gmMin] = [gmMax] = 0 for lights without G/M. */
@@ -29,9 +30,17 @@ class DialIn(
     private val limits: LightLimits,
     private val tolMired: Double = 5.0,
     private val tolDuv: Double = 0.0015,
+    private val fineMired: Double = 2.0,
+    private val fineDuv: Double = 0.0005,
 ) {
     sealed interface Step {
         data class Send(val setting: LightSetting) : Step
+
+        /**
+         * Within tolerance. Once a reading is within [tolMired]/[tolDuv] it keeps
+         * refining towards [fineMired]/[fineDuv] while that helps; [setting] is the
+         * closest one read, which may be an earlier one than the light is at now.
+         */
         data class Matched(val setting: LightSetting) : Step
         /** CCT matched, but the light can't reach the target tint (no G/M, or out of green/magenta). */
         data class Partial(val setting: LightSetting, val reason: String) : Step
@@ -62,6 +71,10 @@ class DialIn(
     private var current: LightSetting? = null
     private var previous: Pair<LightSetting, CctDuv>? = null
 
+    /** The closest setting read so far, and its error (1 = at the edge of tolerance). */
+    private var best: Pair<LightSetting, Double>? = null
+    private var refineSteps = 0
+
     /** First guess: the target's CCT, and G/M from its tint. */
     fun initial(): LightSetting = clamp(target.mired, target.duv / duvPerGm).also { current = it }
 
@@ -69,14 +82,28 @@ class DialIn(
         val set = checkNotNull(current) { "call initial() first" }
         val d = delta(measured, target)
         if (bestGm.let { it == null || abs(d.duv) < it.second }) bestGm = set.gm to abs(d.duv)
+        val error = hypot(d.mired / tolMired, d.duv / tolDuv)
+        val improved = best.let { it == null || error < it.second }
+        if (improved) best = set to error
         val cctOk = abs(d.mired) <= tolMired
         val tintOk = abs(d.duv) <= tolDuv
+        val cctFine = abs(d.mired) <= fineMired
+        val tintFine = abs(d.duv) <= fineDuv
         // Already at the end of the G/M range in the direction the tint needs.
-        val gmAtLimit = limits.hasGm && !tintOk &&
+        val gmAtLimit = limits.hasGm && !tintFine &&
             ((d.duv < 0 && set.gm >= limits.gmMax) || (d.duv > 0 && set.gm <= limits.gmMin))
-        val gmDone = tintOk || !limits.hasGm || gmHeld != null || gmAtLimit
-        if (cctOk && tintOk) return Step.Matched(set)
-        if (cctOk && gmDone) return Step.Partial(set, gelAdvice(d.duv, held = limits.hasGm))
+        val gmDone = tintFine || !limits.hasGm || gmHeld != null || gmAtLimit
+        if (cctFine && tintFine) return Step.Matched(set)
+        if (cctOk && tintOk) {
+            // Good enough. Refine while each step gets closer and there's something left
+            // to move; otherwise settle on the closest reading.
+            val bestSet = best!!.first
+            if ((refineSteps > 0 && !improved) || refineSteps >= MAX_REFINE || (cctFine && gmDone)) {
+                return Step.Matched(bestSet)
+            }
+            refineSteps++
+        }
+        if (cctOk && !tintOk && gmDone) return Step.Partial(set, gelAdvice(d.duv, held = limits.hasGm))
 
         learn(set, measured)
         previous = set to measured
@@ -85,18 +112,19 @@ class DialIn(
             return Step.OutOfRange(set, "Changing CCT isn't changing the light's output — check the light is on the card")
         }
 
-        // Once CCT is within tolerance, leave it: chasing noise only costs readings.
-        val wantMired = if (cctOk) set.mired else set.mired - d.mired / miredGain
-        val wantGm = gmHeld?.toDouble() ?: (set.gm - d.duv / duvPerGm)
+        // Once CCT is within the fine tolerance, leave it: chasing noise only costs readings.
+        val wantMired = if (cctFine) set.mired else set.mired - d.mired / miredGain
+        val wantGm = gmHeld?.toDouble() ?: if (tintFine) set.gm.toDouble() else set.gm - d.duv / duvPerGm
         var next = clamp(wantMired, wantGm)
         // Rounding can leave the setting unchanged; nudge by the smallest step instead.
         if (next == set) {
             next = clamp(
-                if (cctOk) set.mired else set.mired - 3.0 * kotlin.math.sign(d.mired),
+                if (cctFine) set.mired else set.mired - 3.0 * kotlin.math.sign(d.mired),
                 if (gmDone) set.gm.toDouble() else set.gm - kotlin.math.sign(d.duv),
             )
         }
         if (next == set) {
+            if (cctOk && tintOk) return Step.Matched(best!!.first)
             // Only the tint is left and G/M can't move further: as close as this light gets.
             if (cctOk) return Step.Partial(set, gelAdvice(d.duv, held = limits.hasGm))
             return Step.OutOfRange(set, "Colour temp is at the light's ${if (d.mired > 0) "coolest" else "warmest"} setting")
@@ -139,6 +167,11 @@ class DialIn(
         if (abs(dGm) >= 10) {
             gmNoEffect = if (abs(measured.duv - prevMeasured.duv) < 0.2 * abs(dGm) * 0.8e-4) gmNoEffect + 1 else 0
         }
+    }
+
+    private companion object {
+        /** Steps taken past good enough, looking for a closer match. */
+        const val MAX_REFINE = 3
     }
 
     private fun clamp(mired: Double, gm: Double): LightSetting {

@@ -67,7 +67,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import app.lightset.LightRig
 import app.lightset.ble.Im150
 import app.lightset.camera.ExposureWarning
@@ -79,7 +78,6 @@ import app.lightset.color.Delta
 import app.lightset.color.Xy
 import app.lightset.color.delta
 import app.lightset.data.Reference
-import app.lightset.exposure.Exposure
 import java.text.DateFormat
 import java.util.Date
 import kotlin.math.abs
@@ -90,9 +88,8 @@ private const val MATCH_MIRED = 5.0
 private const val MATCH_DUV = 0.0015
 
 @Composable
-fun MeterScreen(vm: MeterViewModel, exposureVm: ExposureViewModel = viewModel()) {
+fun MeterScreen(vm: MeterViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
-    val exposure by exposureVm.state.collectAsStateWithLifecycle()
     var saving by rememberSaveable { mutableStateOf(false) }
     val info = remember { vm.cameraInfo() }
     val shown = state.reading?.let { state.corrected(it.xy, it.source) }
@@ -101,8 +98,15 @@ fun MeterScreen(vm: MeterViewModel, exposureVm: ExposureViewModel = viewModel())
         Header(state, vm)
 
         if (state.meter == ColourMeter.IM150) {
-            // No camera needed: the meter's status in its place, and the reading full width.
-            Im150Strip(state, exposure.liveLux, onRetry = vm::retryIm150, modifier = Modifier.padding(top = 8.dp))
+            // No camera needed: the reading full width (the meter's status is on its chip).
+            if (state.im150Status == Im150.Status.OFF) {
+                Text(
+                    (state.im150Error ?: "IM150 not connected") +
+                        ". Turn it on and close the Illuminati app (it takes one connection at a time). Tap IM150 to retry.",
+                    Modifier.padding(top = 8.dp),
+                    style = MaterialTheme.typography.bodySmall, color = WarnAmber,
+                )
+            }
             Readout(state.reading, shown, state, Modifier.fillMaxWidth().padding(top = 10.dp))
         } else Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.Top) {
             // Camera and reading side by side, controls directly beneath: always on screen.
@@ -179,8 +183,6 @@ fun MeterScreen(vm: MeterViewModel, exposureVm: ExposureViewModel = viewModel())
 
             state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         }
-        HorizontalDivider()
-        ExposureBar(exposure, exposureVm)
     }
 
     if (saving) {
@@ -194,18 +196,32 @@ private fun Header(state: MeterUiState, vm: MeterViewModel) {
     var guide by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        // Which meter reads colour.
+        // Which meter reads colour. The IM150's chip carries its connection: green
+        // connected, amber finding it, red not connected (tap again to retry).
         for (m in ColourMeter.entries) {
+            val im = m == ColourMeter.IM150
             FilterChip(
                 selected = state.meter == m,
-                onClick = { vm.setMeter(m) },
+                onClick = { if (im && state.meter == m) vm.retryIm150() else vm.setMeter(m) },
                 enabled = !state.busy,
-                label = { Text(if (m == ColourMeter.PHONE) "Phone" else "IM150", maxLines = 1, softWrap = false) },
+                label = { Text(if (im) "IM150" else "Phone", maxLines = 1, softWrap = false) },
+                leadingIcon = if (im && (state.meter == m || state.im150Status != Im150.Status.OFF)) {
+                    {
+                        Box(Modifier.size(8.dp).background(
+                            when (state.im150Status) {
+                                Im150.Status.CONNECTED -> GoodGreen
+                                Im150.Status.SEARCHING -> WarnAmber
+                                Im150.Status.OFF -> Color(0xFFE57373)
+                            },
+                            CircleShape,
+                        ))
+                    }
+                } else null,
                 modifier = Modifier.padding(end = 6.dp),
             )
         }
         Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-            LightStatusChip(state.selectedNode?.name?.take(14) ?: "No light", state.lightStatus, onRetry = vm::reconnectLight)
+            AllLightsSwitch(state, vm)
         }
         Box {
             IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More") }
@@ -380,15 +396,11 @@ private fun LightCard(state: MeterUiState, vm: MeterViewModel) {
                 )
                 Column(Modifier.weight(1f)) {
                     LightPicker(state, vm)
-                    Text(
-                        light?.let {
-                            (if (!it.on) "Off · " else "${it.brightness?.let { b -> "$b%" } ?: "brightness not set"} · ") +
-                                if (it.mode == LightRig.Mode.HSI) "hue ${it.hue}°, sat ${it.sat}%"
-                                else "${formatKelvin(it.cct.toDouble())} · G/M %+d".format(it.gm)
-                        } ?: "",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    // The sliders show CCT settings; say so when the light is in colour mode instead.
+                    if (light?.mode == LightRig.Mode.HSI) {
+                        Text("Colour mode: hue ${light.hue}°, sat ${light.sat}%",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
                 Switch(
                     checked = light?.on == true,
@@ -436,20 +448,44 @@ private fun LightCard(state: MeterUiState, vm: MeterViewModel) {
     }
 }
 
-/** Which light Match and calibration use. */
+/**
+ * Master on/off for every connected light (on while any of them is). With none
+ * connected, the light link's state instead, tap to retry when it's offline.
+ */
+@Composable
+private fun AllLightsSwitch(state: MeterUiState, vm: MeterViewModel) {
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    if (state.reachable.isEmpty()) {
+        when (state.lightStatus) {
+            LightRig.Status.CONNECTING -> Text("Connecting…", style = MaterialTheme.typography.labelMedium, color = muted)
+            else -> Text("Lights offline · retry", Modifier.clickable(onClick = vm::reconnectLight).padding(vertical = 8.dp),
+                style = MaterialTheme.typography.labelMedium, color = WarnAmber)
+        }
+        return
+    }
+    Switch(
+        checked = state.reachable.any { it in state.lightsOn },
+        onCheckedChange = vm::setAllOn,
+        enabled = state.task?.running != true,
+    )
+}
+
+/** Which light Match and calibration use: any connected one, in the Lights tab's order. */
 @Composable
 private fun LightPicker(state: MeterUiState, vm: MeterViewModel) {
     var open by remember { mutableStateOf(false) }
+    val choices = state.lights.filter { it.unicast in state.reachable }
+    val canPick = choices.any { it.unicast != state.selected }
     Box {
         Row(
-            Modifier.clickable(enabled = state.lights.size > 1 && state.task?.running != true) { open = true },
+            Modifier.clickable(enabled = canPick && state.task?.running != true) { open = true },
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(state.selectedNode?.name ?: "No lights — add one on the Lights tab", style = MaterialTheme.typography.titleMedium)
-            if (state.lights.size > 1) Icon(Icons.Filled.ArrowDropDown, contentDescription = "Choose light")
+            if (canPick) Icon(Icons.Filled.ArrowDropDown, contentDescription = "Choose light")
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            state.lights.forEach { n ->
+            choices.forEach { n ->
                 DropdownMenuItem(
                     text = { Text("${n.name} · ${n.model.label}") },
                     onClick = { vm.selectLight(n.unicast); open = false },
@@ -730,44 +766,6 @@ private fun CalibrationReview(review: CalReview, current: Calibration?, vm: Mete
                 FilledTonalButton(onClick = vm::saveReviewedCalibration) {
                     Text(if (current != null) "Replace current" else "Save")
                 }
-            }
-        }
-    }
-}
-
-/**
- * Where the camera goes when the IM150 is the meter: connection and battery, and its
- * live light level. Tap to retry when it isn't connected.
- */
-@Composable
-private fun Im150Strip(state: MeterUiState, liveLux: Double?, onRetry: () -> Unit, modifier: Modifier = Modifier) {
-    val muted = MaterialTheme.colorScheme.onSurfaceVariant
-    val (dot, status) = when (state.im150Status) {
-        Im150.Status.CONNECTED -> GoodGreen to ("Connected" + (state.im150Battery?.let { " · battery $it%" } ?: ""))
-        Im150.Status.SEARCHING -> WarnAmber to "Finding the meter…"
-        Im150.Status.OFF -> Color(0xFF9E9E9E) to ((state.im150Error ?: "Not connected") + " · tap to retry")
-    }
-    Row(
-        modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
-            .clickable(enabled = state.im150Status == Im150.Status.OFF, onClick = onRetry)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.size(10.dp).background(dot, CircleShape))
-        Column(Modifier.weight(1f).padding(start = 10.dp)) {
-            Text("IM150", style = MaterialTheme.typography.titleSmall)
-            Text(status, style = MaterialTheme.typography.bodySmall, color = muted)
-            if (state.im150Status == Im150.Status.OFF) {
-                Text("Turn the meter on and close the Illuminati app: it takes one connection at a time.",
-                    style = MaterialTheme.typography.bodySmall, color = muted)
-            }
-        }
-        if (state.im150Connected && liveLux != null) {
-            Column(horizontalAlignment = Alignment.End) {
-                Text("%,d lux".format(liveLux.roundToInt()), style = MaterialTheme.typography.titleMedium)
-                Text("EV %.1f".format(Exposure.ev100(liveLux)), style = MaterialTheme.typography.bodySmall, color = muted)
             }
         }
     }

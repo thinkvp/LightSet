@@ -64,6 +64,9 @@ class LightsViewModel(app: Application) : AndroidViewModel(app) {
     /** Control changes not yet sent, per light; sends run one at a time and skip stale values. */
     private val pending = MutableStateFlow<Map<Int, LightRig.LightState>>(emptyMap())
 
+    /** New order of the lights, after a drag on the Lights tab; Match lists them the same way. */
+    fun reorder(unicasts: List<Int>) = rig.reorder(unicasts)
+
     init {
         viewModelScope.launch {
             combine(rig.nodes, rig.states, pending, rig.reachable, rig.status) { nodes, states, p, reach, st ->

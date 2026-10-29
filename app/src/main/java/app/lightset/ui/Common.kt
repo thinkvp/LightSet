@@ -70,34 +70,6 @@ fun formatTint(duv: Double): String {
     }
 }
 
-/** Coloured dot and label for the light connection; tap to retry when offline. */
-@Composable
-fun LightStatusChip(
-    name: String,
-    status: LightRig.Status,
-    onRetry: () -> Unit,
-    modifier: Modifier = Modifier,
-    offlineLabel: String = "Offline · tap to retry",
-) {
-    val (color, label) = when (status) {
-        LightRig.Status.ONLINE -> GoodGreen to "Online"
-        LightRig.Status.CONNECTING -> WarnAmber to "Connecting…"
-        LightRig.Status.OFFLINE -> Color(0xFF9E9E9E) to offlineLabel
-    }
-    Row(
-        modifier
-            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(50))
-            .clickable(enabled = status == LightRig.Status.OFFLINE, onClick = onRetry)
-            .padding(horizontal = 10.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Box(Modifier.size(8.dp).background(color, CircleShape))
-        Text(if (name.isBlank()) label else "$name · $label", style = MaterialTheme.typography.labelMedium,
-            maxLines = 1, overflow = TextOverflow.Ellipsis)
-    }
-}
-
 /**
  * One light parameter on a single row: label over value (tap the value to type one),
  * then − / slider / +. [toSlider]/[fromSlider] map the value onto 0..1, e.g. so CCT
@@ -286,14 +258,23 @@ fun ColourGauge(track: Brush, value: Float?, reference: Float?, modifier: Modifi
     }
 }
 
-/** A small rounded label filled with [color]. */
+/**
+ * A small status tag in [color]: coloured text on a faint tint with square corners, so
+ * it reads as a label rather than one of the round or outlined buttons. A dark [color]
+ * (a neutral surface) gets plain muted text.
+ */
 @Composable
 fun Pill(text: String, color: Color, modifier: Modifier = Modifier) {
+    val neutral = color.luminance() < 0.1f
+    val shape = RoundedCornerShape(4.dp)
     Text(
         text,
-        modifier.background(color, RoundedCornerShape(50)).padding(horizontal = 8.dp, vertical = 2.dp),
+        modifier
+            .background(if (neutral) color else color.copy(alpha = 0.18f), shape)
+            .padding(horizontal = 6.dp, vertical = 2.dp),
         fontSize = 12.sp,
+        fontWeight = FontWeight.Medium,
         maxLines = 1,
-        color = if (color.luminance() > 0.4f) Color.Black else Color.White,
+        color = if (neutral) MaterialTheme.colorScheme.onSurfaceVariant else color,
     )
 }
