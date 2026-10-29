@@ -86,7 +86,7 @@ fun ExposureBar(state: ExposureUiState, vm: ExposureViewModel) {
             { vm.step(ExposureParam.SHUTTER, it) }, { vm.toggleLock(ExposureParam.SHUTTER) })
         ExposureRow("Frame rate", "${fmtNum(nearestFps(s.fps))} fps", null, locked = null, solved = false,
             onStep = vm::stepFps, onLock = {})
-        ExposureRow("ND", fmtNd(s.ndStops), if (s.ndStops > 0) "${fmtThirds(s.ndStops)} stops" else null,
+        ExposureRow("ND", fmtNd(s.ndStops), if (s.ndStops > 0) "${fmtThirds(s.ndStops)} stops · ${fmtFx6Nd(s.ndStops)}" else null,
             ExposureParam.ND in locked, r != null, { vm.step(ExposureParam.ND, it) }, { vm.toggleLock(ExposureParam.ND) })
         ExposureRow("Expose", "${if (s.bias >= 0) "+" else "−"}${fmtThirds(abs(s.bias))}", "stops over mid-grey",
             locked = null, solved = false, onStep = vm::stepBias, onLock = {})
@@ -174,6 +174,16 @@ private fun fmtShutter(s: ExposureSettings): String {
 }
 
 private fun fmtNd(stops: Double): String = if (stops <= 0.01) "No ND" else "ND %.1f".format(stops * 0.3)
+
+/**
+ * The Sony FX6's variable ND, which is labelled as the fraction of light let through
+ * (1/4 = 2 stops … 1/128 = 7 stops). Between clear and 1/4 it has nothing.
+ */
+private fun fmtFx6Nd(stops: Double): String = when {
+    stops < 2 - 0.01 -> "FX6: none (clear or 1/4)"
+    stops > 7 + 0.01 -> "FX6: past 1/128"
+    else -> "FX6 1/%d".format(2.0.pow(stops).roundToInt())
+}
 
 private fun nearestFps(fps: Double): Double = Exposure.FRAME_RATES.minBy { abs(it - fps) }
 
