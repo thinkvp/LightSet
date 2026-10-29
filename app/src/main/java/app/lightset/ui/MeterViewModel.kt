@@ -34,6 +34,7 @@ import app.lightset.mesh.MeshNode
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,6 +42,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private const val DIAL_MAX_STEPS = 8
 /** Time for auto-exposure to settle on the lit card before it's locked. */
@@ -624,24 +626,56 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
 
     fun dismissTask() = _state.update { it.copy(task = null) }
 
+    /**
+     * Runs a task on the selected light. Other lights that are on are switched off for
+     * the duration, so only the selected one changes what the meter sees (and its share
+     * of the light is as large as it can be), then turned back on however the task ends.
+     */
     private fun runTask(title: String, allowed: Boolean = _state.value.canRunLightTask, block: suspend () -> Unit) {
         if (!allowed) return
         setLive(false)
         taskJob = viewModelScope.launch {
             _state.update { it.copy(task = TaskUi(title), measuring = true) }
+            val others = rig.nodes.value.filter { it.unicast != target() && rig.state(it.unicast).on }
             try {
+                switchOff(others)
                 block()
             } catch (e: CancellationException) {
                 finish(false, "Stopped")
-                target()?.let { u -> runCatching { rig.restore(u) } }
+                withContext(NonCancellable) { target()?.let { u -> runCatching { rig.restore(u) } } }
                 throw e
             } catch (e: Exception) {
                 finish(false, "✗ ${e.message}")
             } finally {
-                runCatching { meter.setExposureLock(false) }
+                withContext(NonCancellable) {
+                    restore(others)
+                    runCatching { meter.setExposureLock(false) }
+                }
                 _state.update { it.copy(measuring = false) }
             }
         }
+    }
+
+    private suspend fun switchOff(lights: List<MeshNode>) {
+        if (lights.isEmpty()) return
+        for (n in lights) {
+            try {
+                rig.lightOff(n.unicast)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                line("Couldn't switch off ${n.name} (${e.message}); it'll be subtracted with the room light")
+            }
+        }
+        line("Switched off ${lights.joinToString { it.name }} for now")
+    }
+
+    /** Turns lights switched off by [switchOff] back on at their remembered settings. */
+    private suspend fun restore(lights: List<MeshNode>) {
+        if (lights.isEmpty()) return
+        val failed = lights.filter { n -> runCatching { rig.restore(n.unicast) }.isFailure }
+        line(if (failed.isEmpty()) "Turned ${lights.joinToString { it.name }} back on"
+            else "Couldn't turn ${failed.joinToString { it.name }} back on — check the Lights tab")
     }
 
     /** A linear sample of the light: the camera's RGB of the card, or the IM150's XYZ (Y in lux). */
