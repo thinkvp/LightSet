@@ -100,6 +100,17 @@ class LightRig(private val app: Application) {
 
     val connected: Boolean get() = link?.connected == true
 
+    private val _connectAllowed = MutableStateFlow(false)
+    /**
+     * False until the user agrees to connect after the app starts, since connecting can
+     * put lights set up by hand back to the app's settings. Connecting for any other
+     * reason (retry, a control change, adding a light) counts as agreeing.
+     */
+    val connectAllowed: StateFlow<Boolean> = _connectAllowed
+
+    /** Ping (or reconnect) on the next pass of [keepConnected] instead of waiting. */
+    @Volatile private var checkNow = false
+
     fun node(unicast: Int): MeshNode? = _nodes.value.firstOrNull { it.unicast == unicast }
     fun state(unicast: Int): LightState = _states.value[unicast] ?: loadState(unicast)
 
@@ -117,8 +128,10 @@ class LightRig(private val app: Application) {
     suspend fun keepConnected() {
         var lastPing = 0L
         while (true) {
+            val now = checkNow
+            checkNow = false
             if (!connected && _status.value != Status.CONNECTING) runCatching { link() }
-            if (connected && System.currentTimeMillis() - lastPing > PING_INTERVAL_MS) {
+            if (connected && (now || System.currentTimeMillis() - lastPing > PING_INTERVAL_MS)) {
                 pingAll()
                 lastPing = System.currentTimeMillis()
             }
@@ -126,11 +139,25 @@ class LightRig(private val app: Application) {
         }
     }
 
+    fun allowConnect() {
+        _connectAllowed.value = true
+    }
+
+    /**
+     * Has [keepConnected] connect, or check the lights, straight away rather than on
+     * its next timed pass (e.g. on opening the Lights tab).
+     */
+    fun refresh() {
+        checkNow = true
+        wake.trySend(Unit)
+    }
+
     suspend fun reconnect() {
         runCatching { link() }
     }
 
     suspend fun link(): NanliteMeshLink = lock.withLock {
+        _connectAllowed.value = true
         link?.let { l ->
             if (l.connected) return@withLock l
             log("Reconnecting…")
@@ -138,6 +165,16 @@ class LightRig(private val app: Application) {
             link = null
         }
         _status.value = Status.CONNECTING
+        try {
+            connectLocked()
+        } finally {
+            // Cancelled part way (e.g. the app went to the background while scanning):
+            // don't stay "connecting", or keepConnected would never try again.
+            if (_status.value == Status.CONNECTING) _status.value = Status.OFFLINE
+        }
+    }
+
+    private suspend fun connectLocked(): NanliteMeshLink {
         val adapter = app.getSystemService(BluetoothManager::class.java)?.adapter
         try {
             checkNotNull(adapter) { "No Bluetooth" }
@@ -178,7 +215,7 @@ class LightRig(private val app: Application) {
                 _nodes.value.firstOrNull { it.address == address }?.let { n -> _reachable.update { it + n.unicast } }
                 _status.value = Status.ONLINE
                 _lastError.value = null
-                return@withLock l
+                return l
             } catch (e: Throwable) {
                 l.close()
                 failure = e
@@ -225,11 +262,16 @@ class LightRig(private val app: Application) {
         _reachable.value = emptySet()
     }
 
-    /** Reads CCT from every light; the ones that answer are reachable. */
+    /**
+     * Checks which lights answer; those are reachable. If the light we're connected
+     * through doesn't answer, the connection is dead without Android having noticed
+     * (common after the app was in the background), so it's dropped to reconnect.
+     */
     suspend fun pingAll() {
         val l = link ?: return
         val ok = mutableSetOf<Int>()
-        for (n in _nodes.value) {
+        val proxy = _nodes.value.firstOrNull { it.address == proxyAddress }
+        for (n in listOfNotNull(proxy) + _nodes.value.filter { it != proxy }) {
             // Lights we added answer Config Default TTL Get (device key); not every
             // model answers Nanlite reads (the PavoTube acts on writes but stays silent).
             val dk = deviceKey(n.unicast)
@@ -240,6 +282,12 @@ class LightRig(private val app: Application) {
                 }
             }.getOrNull()
             if (reply != null) ok += n.unicast
+            else if (n == proxy && dk != null) {
+                log("${n.name} isn't answering; reconnecting")
+                if (link === l) disconnect()
+                wake.trySend(Unit)
+                return
+            }
         }
         _nodes.value.firstOrNull { it.address == proxyAddress }?.let { ok += it.unicast }
         _reachable.value = ok

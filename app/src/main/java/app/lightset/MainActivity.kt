@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Lightbulb
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -24,8 +25,10 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -38,6 +41,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -64,10 +68,11 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         val rig = (application as LightSetApp).rig
         val im150 = (application as LightSetApp).im150
-        // While the app is visible, keep a connection to the light (shows online/offline).
+        // While the app is visible, keep a connection to the light (shows online/offline),
+        // once the user has OK'd connecting.
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                if (hasPermissions()) rig.keepConnected()
+                if (hasPermissions()) rig.connectAllowed.collectLatest { if (it) rig.keepConnected() }
             }
         }
         // And to the IM150 meter, once one is in use.
@@ -79,7 +84,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 PermissionGate {
+                    ConnectPrompt(rig)
                     var tab by rememberSaveable { mutableIntStateOf(0) }
+                    // Opening the Lights tab checks the lights now rather than on the next timed pass.
+                    LaunchedEffect(tab) { if (tab == 1) rig.refresh() }
                     Scaffold(
                         bottomBar = {
                             NavigationBar {
@@ -141,4 +149,29 @@ private fun PermissionGate(content: @Composable () -> Unit) {
             }
         }
     }
+}
+
+/**
+ * Asked once each time the app starts, before it connects: connecting can put lights
+ * that were set up by hand back to the settings last used in LightSet.
+ */
+@Composable
+private fun ConnectPrompt(rig: LightRig) {
+    val allowed by rig.connectAllowed.collectAsStateWithLifecycle()
+    val nodes by rig.nodes.collectAsStateWithLifecycle()
+    var dismissed by rememberSaveable { mutableStateOf(false) }
+    if (allowed || dismissed || nodes.isEmpty()) return
+    AlertDialog(
+        onDismissRequest = { dismissed = true },
+        title = { Text("Connect to lights?") },
+        text = {
+            Text(
+                "Connecting can set your lights back to the settings last used in LightSet " +
+                    "(${nodes.size} light${if (nodes.size == 1) "" else "s"}). Changes made on the " +
+                    "lights themselves may be lost.",
+            )
+        },
+        confirmButton = { TextButton(onClick = rig::allowConnect) { Text("Connect") } },
+        dismissButton = { TextButton(onClick = { dismissed = true }) { Text("Not now") } },
+    )
 }

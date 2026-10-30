@@ -83,10 +83,11 @@ fun LightsScreen(vm: LightsViewModel, exposureVm: ExposureViewModel = viewModel(
                 }
                 LightsMenu(onLog = { showLog = true })
             }
-            // Only problems the user can fix (e.g. Bluetooth off); per-light status is the dot.
-            if (state.status == LightRig.Status.OFFLINE && state.lights.isNotEmpty() && state.statusError != null) {
+            // Only problems the user can fix (e.g. Bluetooth off, or not connecting yet);
+            // per-light status is the dot.
+            if (state.status == LightRig.Status.OFFLINE && state.lights.isNotEmpty()) {
                 Text(
-                    state.statusError + " · tap to retry",
+                    (state.statusError ?: "Not connected") + " · tap to connect",
                     Modifier.clickable(onClick = vm::reconnect),
                     style = MaterialTheme.typography.bodySmall, color = WarnAmber,
                 )

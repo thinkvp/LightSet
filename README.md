@@ -27,6 +27,9 @@ lights over Bluetooth until their colour matches it.
   reset on the light), then controls brightness, CCT, G/M and colour (HSI) for each,
   with online/offline status. Each light can be switched off and back on to its
   previous settings, here and on the Match tab.
+  When the app starts it asks before connecting, since connecting can put lights set
+  up by hand back to the app's settings. Opening the Lights tab checks the lights (and
+  reconnects) straight away.
 
 ## How the lights are controlled
 
