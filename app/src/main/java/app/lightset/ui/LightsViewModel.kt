@@ -93,6 +93,14 @@ class LightsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** The all-lights switch: every connected light off, or back on at its settings. */
+    fun setAllOn(on: Boolean) {
+        val s = _state.value
+        pending.update { p ->
+            p + s.reachable.mapNotNull { u -> s.states[u]?.let { u to it.copy(on = on) } }
+        }
+    }
+
     /** From the light controls; the UI shows the new values straight away. */
     fun setLight(unicast: Int, target: LightRig.LightState) = pending.update { it + (unicast to target) }
 
@@ -119,9 +127,8 @@ class LightsViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(scenes = list) }
     }
 
-    fun reconnect() {
-        viewModelScope.launch { rig.reconnect() }
-    }
+    /** Connects (agreeing to, if the start-up prompt was put off) or checks the lights now. */
+    fun refresh() = rig.connectNow()
 
     fun rename(node: MeshNode, name: String) = rig.updateNode(node.copy(name = name.ifBlank { node.name }))
 

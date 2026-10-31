@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -22,6 +23,7 @@ import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -34,6 +36,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -46,7 +49,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -66,32 +72,50 @@ fun LightsScreen(vm: LightsViewModel, exposureVm: ExposureViewModel = viewModel(
     val exposure by exposureVm.state.collectAsStateWithLifecycle()
     var showLog by rememberSaveable { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
+        TabHeader(Modifier.padding(horizontal = 16.dp)) {
+            if (state.add == null) {
+                OutlinedButton(onClick = vm::startAdd, Modifier.padding(end = 10.dp)) {
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text(" Add")
+                }
+            }
+            // The connection, only when it needs attention (per-light status is the dot).
+            Box(Modifier.weight(1f)) {
+                if (state.lights.isNotEmpty()) when (state.status) {
+                    LightRig.Status.CONNECTING -> Text("Connecting…", style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    LightRig.Status.OFFLINE -> Text(state.statusError ?: "Not connected", Modifier.clickable(onClick = vm::refresh),
+                        style = MaterialTheme.typography.bodyMedium, color = WarnAmber, maxLines = 2)
+                    LightRig.Status.ONLINE -> Unit
+                }
+            }
+            if (state.lights.isNotEmpty()) {
+                if (state.status == LightRig.Status.CONNECTING) {
+                    Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    }
+                } else {
+                    IconButton(onClick = vm::refresh) {
+                        Icon(Icons.Filled.Refresh, contentDescription = "Connect to lights and check them")
+                    }
+                }
+            }
+            // Every connected light off or back on, in the same place as on Match.
+            if (state.reachable.isNotEmpty() && state.status == LightRig.Status.ONLINE) {
+                Switch(
+                    checked = state.reachable.any { state.states[it]?.on == true },
+                    onCheckedChange = vm::setAllOn,
+                )
+            }
+            LightsMenu(onLog = { showLog = true })
+        }
         Column(
             Modifier
                 .weight(1f)
                 .verticalScroll(rememberScrollState())
-                .padding(16.dp),
+                .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Lights", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-                if (state.add == null) {
-                    FilledTonalButton(onClick = vm::startAdd) {
-                        Icon(Icons.Filled.Add, contentDescription = null)
-                        Text(" Add light")
-                    }
-                }
-                LightsMenu(onLog = { showLog = true })
-            }
-            // Only problems the user can fix (e.g. Bluetooth off, or not connecting yet);
-            // per-light status is the dot.
-            if (state.status == LightRig.Status.OFFLINE && state.lights.isNotEmpty()) {
-                Text(
-                    (state.statusError ?: "Not connected") + " · tap to connect",
-                    Modifier.clickable(onClick = vm::reconnect),
-                    style = MaterialTheme.typography.bodySmall, color = WarnAmber,
-                )
-            }
             state.add?.let { AddLightCard(it, vm) }
             // Drag a light by its handle to reorder; Match lists lights in this order.
             ReorderableColumn(state.lights, key = { it.unicast }, onReorder = vm::reorder) { node, handle ->
@@ -100,7 +124,6 @@ fun LightsScreen(vm: LightsViewModel, exposureVm: ExposureViewModel = viewModel(
         }
         // Exposure while setting key and fill: it needs the IM150's light level.
         if (exposure.im150Status == Im150.Status.CONNECTED) {
-            HorizontalDivider()
             ExposureBar(exposure, exposureVm)
         }
         HorizontalDivider()
@@ -131,11 +154,11 @@ private fun SceneBar(state: LightsUiState, vm: LightsViewModel) {
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        FilledTonalButton(onClick = { saving = true }, enabled = state.lights.isNotEmpty(), modifier = Modifier.weight(1f)) {
+        OutlinedButton(onClick = { saving = true }, enabled = state.lights.isNotEmpty(), modifier = Modifier.weight(1f)) {
             Text("Save scene")
         }
         Box(Modifier.weight(1f)) {
-            FilledTonalButton(onClick = { loading = true }, enabled = state.scenes.isNotEmpty(), modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = { loading = true }, enabled = state.scenes.isNotEmpty(), modifier = Modifier.fillMaxWidth()) {
                 Text("Load scene")
             }
             DropdownMenu(expanded = loading, onDismissRequest = { loading = false }) {
@@ -205,29 +228,25 @@ private fun LightControlCard(node: MeshNode, state: LightsUiState, vm: LightsVie
         send(l.copy(cct = cct.coerceIn(cctRange), gm = gm, mode = LightRig.Mode.CCT))
     fun setHsi(hue: Int = l.hue, sat: Int = l.sat) = send(l.copy(hue = hue, sat = sat, mode = LightRig.Mode.HSI))
 
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(start = 4.dp, top = 4.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    // The stripe (drag it to reorder) shows the light's colour; offline lights are dimmed.
+    StripeCard(lightColor(if (hsi) l else l.copy(mode = LightRig.Mode.CCT)), Modifier.alpha(if (status == LightRig.Status.OFFLINE) 0.55f else 1f),
+        handle = handle.semantics { contentDescription = "Drag to reorder ${node.name}" }) {
+        Column(Modifier.padding(top = 4.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Filled.DragHandle,
-                    contentDescription = "Drag to reorder ${node.name}",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = handle.padding(horizontal = 4.dp, vertical = 12.dp),
-                )
+                // Tap the name or summary to show or hide the controls.
                 Row(
-                    Modifier.weight(1f).clickable { expanded = !expanded }.padding(vertical = 6.dp),
+                    Modifier.weight(1f).clickable { expanded = !expanded }.padding(start = 4.dp, top = 6.dp, bottom = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    val swatch = when {
-                        !l.on -> Color(0xFF424242)
-                        hsi -> Color.hsv(l.hue.toFloat(), l.sat / 100f, 1f)
-                        else -> kelvinColor(l.cct)
-                    }
-                    Box(Modifier.size(26.dp).background(swatch, CircleShape))
-                    Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                    Column(Modifier.weight(1f).padding(end = 8.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(node.name, style = MaterialTheme.typography.titleMedium, maxLines = 1)
                             Box(Modifier.padding(start = 8.dp).size(8.dp).background(statusColor(status), CircleShape))
+                            // The model too, unless the name already says it.
+                            if (!node.name.contains(node.model.label, ignoreCase = true)) {
+                                Text(node.model.label, Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                            }
                         }
                         Text(
                             (if (l.on) "${l.brightness?.let { "$it%" } ?: "—"} · " else "Off · ") +
@@ -238,14 +257,11 @@ private fun LightControlCard(node: MeshNode, state: LightsUiState, vm: LightsVie
                             maxLines = 1,
                         )
                     }
-                    Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                        contentDescription = if (expanded) "Hide controls" else "Show controls")
                 }
                 Switch(
                     checked = l.on,
                     onCheckedChange = { send(l.copy(on = it)) },
                     enabled = online,
-                    modifier = Modifier.padding(start = 4.dp),
                 )
                 NodeMenu(node, vm)
             }
@@ -253,7 +269,7 @@ private fun LightControlCard(node: MeshNode, state: LightsUiState, vm: LightsVie
                 Text(it.second, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
             }
             if (!expanded) return@Column
-            Column(Modifier.padding(start = 8.dp, end = 12.dp)) {
+            Column(Modifier.padding(end = 8.dp)) {
                 if (node.model.rgb) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilterChip(selected = !hsi, onClick = { set() }, enabled = online, label = { Text("White") })

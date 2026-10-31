@@ -1,16 +1,24 @@
 package app.lightset.ui
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import android.graphics.SurfaceTexture
 import android.view.TextureView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Column
@@ -25,8 +33,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -38,7 +48,9 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -47,19 +59,25 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -80,6 +98,7 @@ import app.lightset.color.delta
 import app.lightset.data.Reference
 import java.text.DateFormat
 import java.util.Date
+import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -107,7 +126,10 @@ fun MeterScreen(vm: MeterViewModel) {
                     style = MaterialTheme.typography.bodySmall, color = WarnAmber,
                 )
             }
-            Readout(state.reading, shown, state, Modifier.fillMaxWidth().padding(top = 10.dp))
+            Box(Modifier.fillMaxWidth().padding(top = 10.dp)) {
+                Readout(state.reading, shown, state, Modifier.fillMaxWidth())
+                if (state.live) LiveBadge(Modifier.align(Alignment.TopEnd))
+            }
         } else Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.Top) {
             // Camera and reading side by side, controls directly beneath: always on screen.
             val aspect = info?.previewSize?.let { it.height.toFloat() / it.width } ?: 0.75f
@@ -115,9 +137,11 @@ fun MeterScreen(vm: MeterViewModel) {
                 Modifier
                     .weight(0.42f)
                     .aspectRatio(aspect)
-                    .background(Color.Black, RoundedCornerShape(12.dp)),
+                    .background(Color.Black, RoundedCornerShape(12.dp))
+                    .then(if (state.live) Modifier.border(2.dp, LiveRed, RoundedCornerShape(12.dp)) else Modifier),
             ) {
                 CameraPreview(onAvailable = vm::startCamera, onGone = vm::stopCamera)
+                if (state.live) LiveBadge(Modifier.align(Alignment.TopEnd).padding(6.dp))
                 // Drag up to enlarge the sampled box, down to shrink it.
                 Reticle(
                     state.patch,
@@ -147,28 +171,32 @@ fun MeterScreen(vm: MeterViewModel) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Button(onClick = vm::measureOnce, enabled = state.meterReady && !state.busy && !state.live) {
-                Text(if (state.measuring && state.task?.running != true) "Measuring…" else "Measure")
+            // Measures the room with the lights off and saves it as the reference.
+            Button(onClick = vm::setAmbient, enabled = state.meterReady && !state.busy, modifier = Modifier.weight(1f)) {
+                Text(if (state.measuring && state.task?.running != true && !state.live) "Reading ambient…" else "Set ambient")
+            }
+            // A reading without saving it, to check a light or the room.
+            OutlinedButton(onClick = vm::measureOnce, enabled = state.meterReady && !state.busy && !state.live) {
+                Text("Measure")
             }
             FilterChip(
                 selected = state.live,
                 onClick = { vm.setLive(!state.live) },
                 enabled = state.meterReady && state.task?.running != true,
                 label = { Text("Live") },
+                leadingIcon = if (state.live) {
+                    { Box(Modifier.size(8.dp).background(LiveRed, CircleShape)) }
+                } else null,
             )
-            Spacer(Modifier.weight(1f))
-            FilledTonalButton(onClick = { saving = true }, enabled = state.reading != null && !state.live && !state.busy) {
-                Text("Save ref")
-            }
         }
         HorizontalDivider()
 
         Column(
-            Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            ReferencePicker(state.references, state.active, { state.corrected(it.xy, it.source) },
-                vm::selectReference, vm::deleteReference)
+            ReferencePicker(state, { state.corrected(it.xy, it.source) }, vm,
+                onSaveReading = { saving = true })
 
             state.calSession?.let { session ->
                 CalibrationCard(
@@ -186,7 +214,7 @@ fun MeterScreen(vm: MeterViewModel) {
     }
 
     if (saving) {
-        SaveDialog(onSave = { vm.saveReference(it); saving = false }, onDismiss = { saving = false })
+        SaveDialog(vm.defaultReferenceName(), onSave = { vm.saveReference(it); saving = false }, onDismiss = { saving = false })
     }
 }
 
@@ -195,7 +223,7 @@ private fun Header(state: MeterUiState, vm: MeterViewModel) {
     var menu by remember { mutableStateOf(false) }
     var guide by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
-    Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+    TabHeader {
         // Which meter reads colour. The IM150's chip carries its connection: green
         // connected, amber finding it, red not connected (tap again to retry).
         for (m in ColourMeter.entries) {
@@ -268,7 +296,7 @@ private fun Readout(reading: Reading?, shown: CctDuv?, state: MeterUiState, modi
             Column(Modifier.padding(start = 10.dp)) {
                 Text(shown?.let { formatKelvin(it.cct) } ?: "—", fontSize = 28.sp, fontWeight = FontWeight.SemiBold,
                     lineHeight = 32.sp, maxLines = 1)
-                Text(shown?.let { formatTint(it.duv) } ?: "Tap Measure or Live", style = MaterialTheme.typography.bodyMedium,
+                Text(shown?.let { formatTint(it.duv) } ?: "Set ambient or Measure", style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
@@ -282,7 +310,14 @@ private fun Readout(reading: Reading?, shown: CctDuv?, state: MeterUiState, modi
         }
         FlowRow(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            if (shown != null && ref != null) {
+            val isReference = reading != null && state.active?.let {
+                it.createdAt == reading.timestampMs && it.source == reading.source
+            } == true
+            if (state.settingAmbient) {
+                Pill("Reading ambient…", MaterialTheme.colorScheme.surfaceVariant)
+            } else if (isReference) {
+                Pill("Saved as reference", MaterialTheme.colorScheme.surfaceVariant)
+            } else if (shown != null && ref != null) {
                 val d = delta(shown, ref)
                 if (d.withinTolerance(MATCH_MIRED, MATCH_DUV)) {
                     Pill("Matches", GoodGreen)
@@ -312,45 +347,93 @@ private fun Readout(reading: Reading?, shown: CctDuv?, state: MeterUiState, modi
     }
 }
 
+/**
+ * The reference lights are matched to, with how old it is (amber once it's a few hours
+ * old, as the room light may have moved). An old one from last time is offered, not
+ * used. The menu picks, renames or deletes references, or saves the current reading.
+ */
 @Composable
-private fun ReferencePicker(
-    refs: List<Reference>,
-    active: Reference?,
-    corrected: (Reference) -> CctDuv,
-    onSelect: (String?) -> Unit,
-    onDelete: (String) -> Unit,
-) {
+private fun ReferencePicker(state: MeterUiState, corrected: (Reference) -> CctDuv, vm: MeterViewModel, onSaveReading: () -> Unit) {
+    val refs = state.references
+    val active = state.active
+    val last = state.lastReference
     var open by remember { mutableStateOf(false) }
-    val fmt = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT) }
+    var renaming by remember { mutableStateOf<Reference?>(null) }
+    var width by remember { mutableIntStateOf(0) }
+    val now by produceState(System.currentTimeMillis()) {
+        while (true) {
+            delay(30_000)
+            value = System.currentTimeMillis()
+        }
+    }
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
     Box {
         Row(
             Modifier
                 .fillMaxWidth()
+                .onSizeChanged { width = it.width }
                 .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp))
-                .clickable(enabled = refs.isNotEmpty()) { open = true }
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .clickable { open = true }
+                .padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                Modifier.padding(end = 12.dp).size(26.dp).background(
-                    active?.let { corrected(it).let { c -> tintedColor(c.cct, c.duv) } } ?: Color.Transparent, CircleShape,
-                )
-            )
             Column(Modifier.weight(1f)) {
-                Text("Reference", style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(
-                    when {
-                        active != null -> corrected(active).let { "${active.name} · ${formatKelvin(it.cct)} ${formatTint(it.duv)}" }
-                        refs.isEmpty() -> "Measure the ambient, then Save ref"
-                        else -> "None selected"
-                    },
-                    style = MaterialTheme.typography.bodyLarge,
-                )
+                // Label and age, then the values (bigger) and the name.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Reference", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = muted)
+                    active?.let {
+                        val age = now - it.createdAt
+                        Text(formatAge(age, it.createdAt, now), style = MaterialTheme.typography.labelMedium,
+                            color = if (age > STALE_REF_MS) WarnAmber else muted, maxLines = 1)
+                    }
+                }
+                Row(Modifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (active != null) {
+                        val c = corrected(active)
+                        Box(Modifier.padding(end = 8.dp).size(16.dp).background(tintedColor(c.cct, c.duv), CircleShape))
+                        Text("${formatKelvin(c.cct)}  ${formatTint(c.duv)}", style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Medium, maxLines = 1)
+                        Text("  ${active.name}", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = muted,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    } else {
+                        Text(
+                            when {
+                                last != null -> "None yet: Set ambient, or use the last one"
+                                refs.isEmpty() -> "Set ambient to read the room"
+                                else -> "None selected"
+                            },
+                            Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
             }
-            if (refs.isNotEmpty()) Icon(Icons.Filled.ArrowDropDown, contentDescription = "Choose reference")
+            if (last != null && active == null) {
+                // Last job's reference, one tap to carry on with it.
+                TextButton(onClick = { vm.selectReference(last.id) }, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text("Use last", style = MaterialTheme.typography.labelLarge)
+                        Text(formatAge(now - last.createdAt, last.createdAt, now), style = MaterialTheme.typography.labelSmall,
+                            color = muted)
+                    }
+                }
+            } else {
+                Icon(Icons.Filled.ArrowDropDown, contentDescription = "Choose reference")
+            }
         }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        // As wide as the row, so names and values are easy to read.
+        DropdownMenu(
+            expanded = open, onDismissRequest = { open = false },
+            modifier = Modifier.width(with(LocalDensity.current) { width.toDp() }),
+        ) {
+            if (state.reading != null && !state.live && !state.busy) {
+                DropdownMenuItem(
+                    leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                    text = { Text("Save current reading…") },
+                    onClick = { open = false; onSaveReading() },
+                )
+                if (refs.isNotEmpty()) HorizontalDivider()
+            }
             refs.forEach { ref ->
                 val c = corrected(ref)
                 DropdownMenuItem(
@@ -359,20 +442,66 @@ private fun ReferencePicker(
                         Column {
                             Text(ref.name, fontWeight = if (ref.id == active?.id) FontWeight.SemiBold else null)
                             Text("${formatKelvin(c.cct)} ${formatTint(c.duv)} · " +
-                                (if (ref.source == MeterSource.IM150) "IM150 · " else "") + fmt.format(Date(ref.createdAt)),
+                                (if (ref.source == MeterSource.IM150) "IM150 · " else "") +
+                                formatAge(now - ref.createdAt, ref.createdAt, now),
                                 style = MaterialTheme.typography.bodySmall)
                         }
                     },
-                    onClick = { onSelect(ref.id); open = false },
+                    onClick = { vm.selectReference(ref.id); open = false },
                     trailingIcon = {
-                        IconButton(onClick = { onDelete(ref.id) }) {
-                            Icon(Icons.Filled.Delete, contentDescription = "Delete ${ref.name}")
+                        Row {
+                            IconButton(onClick = { open = false; renaming = ref }) {
+                                Icon(Icons.Filled.Edit, contentDescription = "Rename ${ref.name}")
+                            }
+                            IconButton(onClick = { vm.deleteReference(ref.id) }) {
+                                Icon(Icons.Filled.Delete, contentDescription = "Delete ${ref.name}")
+                            }
                         }
                     },
                 )
             }
+            if (refs.isEmpty() && state.reading == null) {
+                DropdownMenuItem(text = { Text("No references yet") }, onClick = { open = false }, enabled = false)
+            }
         }
     }
+    renaming?.let { ref ->
+        var name by remember(ref.id) { mutableStateOf(ref.name) }
+        AlertDialog(
+            onDismissRequest = { renaming = null },
+            title = { Text("Rename reference") },
+            text = { OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true) },
+            confirmButton = { TextButton(onClick = { vm.renameReference(ref.id, name); renaming = null }) { Text("Save") } },
+            dismissButton = { TextButton(onClick = { renaming = null }) { Text("Cancel") } },
+        )
+    }
+}
+
+/** A reference older than this is shown in amber: the room light may have changed. */
+private const val STALE_REF_MS = 3 * 60 * 60 * 1000L
+
+/** "just now", "12 min ago", "3 h ago", "yesterday 12:37", or the date. */
+private fun formatAge(ageMs: Long, at: Long, now: Long): String {
+    val min = ageMs / 60_000
+    val time = DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(at))
+    val days = java.util.concurrent.TimeUnit.MILLISECONDS.toDays(
+        startOfDay(now) - startOfDay(at))
+    return when {
+        min < 1 -> "just now"
+        min < 60 -> "$min min ago"
+        days == 0L -> "${min / 60} h ago"
+        days == 1L -> "yesterday $time"
+        else -> java.text.SimpleDateFormat("d MMM", java.util.Locale.getDefault()).format(Date(at)) + " $time"
+    }
+}
+
+private fun startOfDay(ms: Long): Long = java.util.Calendar.getInstance().run {
+    timeInMillis = ms
+    set(java.util.Calendar.HOUR_OF_DAY, 0)
+    set(java.util.Calendar.MINUTE, 0)
+    set(java.util.Calendar.SECOND, 0)
+    set(java.util.Calendar.MILLISECOND, 0)
+    timeInMillis
 }
 
 /** The light: status, brightness, and the Match action with its progress. */
@@ -381,19 +510,9 @@ private fun LightCard(state: MeterUiState, vm: MeterViewModel) {
     val light = state.light
     val online = state.lightStatus == LightRig.Status.ONLINE
     val task = state.task
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    StripeCard(lightColor(light)) {
+        Column(Modifier.padding(start = 4.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier.padding(end = 12.dp).size(26.dp).background(
-                        when {
-                            light == null || !light.on -> Color(0xFF424242)
-                            light.mode == LightRig.Mode.HSI -> Color.hsv(light.hue.toFloat(), light.sat / 100f, 1f)
-                            else -> tintedColor(light.cct.toDouble(), 0.0)
-                        },
-                        CircleShape,
-                    )
-                )
                 Column(Modifier.weight(1f)) {
                     LightPicker(state, vm)
                     // The sliders show CCT settings; say so when the light is in colour mode instead.
@@ -495,25 +614,59 @@ private fun LightPicker(state: MeterUiState, vm: MeterViewModel) {
     }
 }
 
+/**
+ * A light task: its title, a progress bar while it runs, and the latest step (all
+ * steps on request), then the result. Kept short so Match fits without scrolling.
+ */
 @Composable
 private fun TaskView(task: TaskUi, onDismiss: () -> Unit) {
     var details by remember(task.title) { mutableStateOf(false) }
-    HorizontalDivider(Modifier.padding(vertical = 4.dp))
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(task.title, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
-        TextButton(onClick = { details = !details }) { Text(if (details) "Hide steps" else "Steps (${task.lines.size})") }
-        if (!task.running) TextButton(onClick = onDismiss) { Text("Clear") }
-    }
-    if (task.running && !details) {
-        task.lines.lastOrNull()?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-    }
-    if (details) {
-        task.lines.forEach { Text(it, fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 14.sp) }
-    }
-    task.result?.let {
-        Text(it, color = if (task.success) GoodGreen else WarnAmber, fontWeight = FontWeight.SemiBold)
+    Column(Modifier.padding(top = 6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(task.title, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f), maxLines = 1,
+                overflow = TextOverflow.Ellipsis)
+            TextButton(onClick = { details = !details }, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                Text(if (details) "Hide steps" else "Steps (${task.lines.size})")
+            }
+            if (!task.running) TextButton(onClick = onDismiss, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Clear") }
+        }
+        if (task.running) {
+            val p = task.progress
+            if (p == null) LinearProgressIndicator(Modifier.fillMaxWidth())
+            else LinearProgressIndicator(progress = { p }, modifier = Modifier.fillMaxWidth())
+            if (!details) {
+                task.lines.lastOrNull()?.let {
+                    Text(it, Modifier.padding(top = 4.dp), style = MaterialTheme.typography.bodySmall, maxLines = 1,
+                        overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        if (details) {
+            task.lines.forEach { Text(it, fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 14.sp) }
+        }
+        task.result?.let {
+            Text(it, color = if (task.success) GoodGreen else WarnAmber, fontWeight = FontWeight.SemiBold)
+        }
     }
 }
+
+/** A pulsing red dot and LIVE, so it's plain the reading is updating. */
+@Composable
+private fun LiveBadge(modifier: Modifier = Modifier) {
+    val pulse by rememberInfiniteTransition(label = "live").animateFloat(
+        initialValue = 1f, targetValue = 0.25f,
+        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "pulse",
+    )
+    Row(
+        modifier.background(Color(0xCC000000), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(8.dp).alpha(pulse).background(LiveRed, CircleShape))
+        Text("LIVE", Modifier.padding(start = 4.dp), color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+private val LiveRed = Color(0xFFFF4D4D)
 
 @Composable
 private fun CameraPreview(onAvailable: (SurfaceTexture) -> Unit, onGone: () -> Unit) {
@@ -805,8 +958,7 @@ private fun describeCalibration(c: Calibration): String {
 }
 
 @Composable
-private fun SaveDialog(onSave: (String) -> Unit, onDismiss: () -> Unit) {
-    val default = remember { "Ambient " + DateFormat.getTimeInstance(DateFormat.SHORT).format(Date()) }
+private fun SaveDialog(default: String, onSave: (String) -> Unit, onDismiss: () -> Unit) {
     var name by rememberSaveable { mutableStateOf(default) }
     AlertDialog(
         onDismissRequest = onDismiss,

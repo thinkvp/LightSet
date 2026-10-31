@@ -43,6 +43,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
+import kotlin.math.ln
 
 private const val DIAL_MAX_STEPS = 10
 /** Time for auto-exposure to settle on the lit card before it's locked. */
@@ -51,6 +53,15 @@ private const val SETTLE_MS = 900L
 private const val MIN_SETTLE_MS = 300L
 /** Longest wait for consecutive readings to agree; after that the last pair is used. */
 private const val SETTLE_TIMEOUT_MS = 5000L
+
+/** A reference older than this when the app starts is from another job: offered, not selected. */
+private const val FRESH_MS = 6 * 60 * 60 * 1000L
+/** Longest wait for the ambient to steady after switching lights off. */
+private const val AMBIENT_TIMEOUT_MS = 6000L
+
+/** Match tolerances, for the progress bar: 5 mired and 1.5 tint (Duv ×1000). */
+private const val MATCH_MIRED_TOL = 5.0
+private const val MATCH_DUV_TOL = 0.0015
 
 private const val KEY_SELECTED = "selected_light"
 private const val KEY_PATCH = "patch"
@@ -98,6 +109,8 @@ private class LightRead(val c: CctDuv, val share: Double, val settle: Settle)
 data class TaskUi(
     val title: String,
     val running: Boolean = true,
+    /** How far along, 0..1; null while there's no telling (e.g. reading the ambient). */
+    val progress: Float? = null,
     val lines: List<String> = emptyList(),
     val result: String? = null,
     val success: Boolean = false,
@@ -109,7 +122,11 @@ data class MeterUiState(
     val reading: Reading? = null,
     val references: List<Reference> = emptyList(),
     val activeId: String? = null,
+    /** The reference selected last time, when it's too old to pick up automatically. */
+    val lastReference: Reference? = null,
     val measuring: Boolean = false,
+    /** Set ambient is reading the room (its readings aren't compared with the old reference). */
+    val settingAmbient: Boolean = false,
     val live: Boolean = false,
     val error: String? = null,
     val calibration: Calibration? = null,
@@ -168,12 +185,18 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
     private val im150 = (app as LightSetApp).im150
 
     private val _state = MutableStateFlow(
-        MeterUiState(
-            references = store.load(),
-            activeId = store.activeId,
-            calibration = store.calibration,
-            previousCalibration = store.previousCalibration,
-        )
+        store.load().let { refs ->
+            // Start each job fresh: an old reference is offered rather than used.
+            val last = refs.firstOrNull { it.id == store.activeId }
+            val fresh = last != null && System.currentTimeMillis() - last.createdAt < FRESH_MS
+            MeterUiState(
+                references = refs,
+                activeId = last?.id?.takeIf { fresh },
+                lastReference = last?.takeUnless { fresh },
+                calibration = store.calibration,
+                previousCalibration = store.previousCalibration,
+            )
+        }
     )
     val state: StateFlow<MeterUiState> = _state
 
@@ -362,6 +385,75 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- References ----------------------------------------------------------
 
+    /**
+     * Measures the ambient and saves it as the reference in one go. Lights that are on
+     * are switched off first so only the room light is read, then turned back on.
+     */
+    fun setAmbient() {
+        val s = _state.value
+        if (s.busy || !s.meterReady) return
+        setLive(false)
+        taskJob = viewModelScope.launch {
+            _state.update { it.copy(measuring = true, settingAmbient = true, error = null) }
+            val on = rig.nodes.value.filter { rig.state(it.unicast).on }
+            val reachable = _state.value.reachable
+            val off = on.filter { it.unicast in reachable }
+            val failed = mutableListOf<MeshNode>()
+            try {
+                for (n in off) {
+                    try {
+                        rig.lightOff(n.unicast)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        failed += n
+                    }
+                }
+                val r = steadyReading(waitForFade = off.isNotEmpty()) ?: return@launch
+                _state.update { it.copy(reading = r) }
+                saveReference("Ambient " + refStamp(r.timestampMs))
+                val left = failed.toList()
+                if (left.isNotEmpty()) {
+                    _state.update {
+                        it.copy(error = "Couldn't switch off ${left.joinToString { n -> n.name }}: " +
+                            "if ${if (left.size == 1) "it was" else "they were"} on, the reference includes ${if (left.size == 1) "it" else "them"}")
+                    }
+                }
+            } finally {
+                withContext(NonCancellable) {
+                    for (n in off - failed.toSet()) runCatching { rig.restore(n.unicast) }
+                }
+                _state.update { it.copy(measuring = false, settingAmbient = false) }
+            }
+        }
+    }
+
+    /**
+     * Reads until two readings in a row agree (lights fading out, auto-exposure
+     * settling), or the timeout passes, and returns the last. Null if nothing was read.
+     */
+    private suspend fun steadyReading(waitForFade: Boolean): Reading? {
+        if (waitForFade) delay(SETTLE_MS)
+        val start = SystemClock.elapsedRealtime()
+        var last = takeReading(frames = 4)
+        while (SystemClock.elapsedRealtime() - start < AMBIENT_TIMEOUT_MS) {
+            delay(MIN_SETTLE_MS)
+            val next = takeReading(frames = 4) ?: continue
+            val prev = last
+            last = next
+            if (prev != null && delta(cctDuv(next.xy), cctDuv(prev.xy)).withinTolerance(2.0, 0.0005)) break
+        }
+        return last
+    }
+
+    /** Day and time for a reference's name, e.g. "30 Oct 12:37". */
+    private fun refStamp(ms: Long): String =
+        java.text.SimpleDateFormat("d MMM", java.util.Locale.getDefault()).format(java.util.Date(ms)) + " " +
+            java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(ms))
+
+    /** Default name for saving the current reading by hand. */
+    fun defaultReferenceName(): String = "Reading " + refStamp(System.currentTimeMillis())
+
     fun saveReference(name: String) {
         val s = _state.value
         val r = s.reading ?: return
@@ -379,12 +471,19 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         val list = listOf(ref) + s.references
         store.save(list)
         store.activeId = ref.id
-        _state.update { it.copy(references = list, activeId = ref.id) }
+        _state.update { it.copy(references = list, activeId = ref.id, lastReference = null) }
     }
 
     fun selectReference(id: String?) {
         store.activeId = id
-        _state.update { it.copy(activeId = id) }
+        _state.update { it.copy(activeId = id, lastReference = null) }
+    }
+
+    fun renameReference(id: String, name: String) {
+        if (name.isBlank()) return
+        val list = _state.value.references.map { if (it.id == id) it.copy(name = name.trim()) else it }
+        store.save(list)
+        _state.update { it.copy(references = list) }
     }
 
     fun deleteReference(id: String) {
@@ -392,7 +491,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         store.save(list)
         val active = _state.value.activeId.takeUnless { it == id }
         store.activeId = active
-        _state.update { it.copy(references = list, activeId = active) }
+        _state.update { it.copy(references = list, activeId = active, lastReference = it.lastReference?.takeUnless { r -> r.id == id }) }
     }
 
     // --- Light ---------------------------------------------------------------
@@ -543,9 +642,16 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
                 line("Note: the reference was measured with the ${if (probe.im150) "phone" else "IM150"}")
             }
             val ambient = lockAndReadAmbient(node.unicast, setting, listOf(probe))?.single() ?: return@runTask
+            var firstError: Double? = null
             for (i in 1..DIAL_MAX_STEPS) {
                 val m = readLight(probe, ambient) ?: return@runTask
                 val dd = delta(m.c, target)
+                // Progress is how much of the first reading's error is gone (on a log
+                // scale, as each step closes much of the remaining gap); never backwards.
+                val error = maxOf(abs(dd.mired) / MATCH_MIRED_TOL, abs(dd.duv) / MATCH_DUV_TOL)
+                val first = firstError ?: error.also { firstError = it }
+                val p = if (error <= 1 || first <= 1) 1.0 else 1 - ln(error) / ln(first)
+                progress(0.15f + 0.85f * p.toFloat().coerceIn(0f, 1f) * if (error <= 1) 1f else 0.95f)
                 line("$i  ${setting.cct} K, G/M %+d → %s  (%+.0f mired, tint %+.1f)  %s"
                     .format(setting.gm, fmt(m.c), dd.mired, dd.duv * 1000, fmtSettle(m.settle)))
                 when (val step = d.next(m.c)) {
@@ -591,6 +697,7 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
             val settle = mutableMapOf<Double, Settle>()
             var minShare = 1.0
             for (k in CALIBRATION_TARGETS) {
+                progress(CALIBRATION_TARGETS.indexOf(k).toFloat() / CALIBRATION_TARGETS.size)
                 rig.apply(node.unicast, LightSetting(k.toInt(), 0))
                 val m = readLight(camera, ambient[0], calibrated = false) ?: return@runTask
                 val ref = reference?.let { readLight(it, ambient[1]) ?: return@runTask }
@@ -658,7 +765,9 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         setLive(false)
         taskJob = viewModelScope.launch {
             _state.update { it.copy(task = TaskUi(title), measuring = true) }
-            val others = rig.nodes.value.filter { it.unicast != target() && rig.state(it.unicast).on }
+            // Only lights that are connected: offline ones can't be reached (or seen) anyway.
+            val reachable = _state.value.reachable
+            val others = rig.nodes.value.filter { it.unicast != target() && rig.state(it.unicast).on && it.unicast in reachable }
             try {
                 switchOff(others)
                 block()
@@ -831,6 +940,10 @@ class MeterViewModel(app: Application) : AndroidViewModel(app) {
         else "still changing (±%.1f mired, ±%.1f tint)".format(s.spread.mired, s.spread.duv * 1000)
 
     private fun line(t: String) = _state.update { s -> s.copy(task = s.task?.let { it.copy(lines = it.lines + t) }) }
+
+    private fun progress(p: Float) = _state.update { s ->
+        s.copy(task = s.task?.let { it.copy(progress = maxOf(it.progress ?: 0f, p)) })
+    }
 
     private fun finish(success: Boolean, result: String) = _state.update { s ->
         s.copy(task = (s.task ?: TaskUi("")).copy(running = false, success = success, result = result))

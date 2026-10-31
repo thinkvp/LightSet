@@ -152,6 +152,12 @@ class LightRig(private val app: Application) {
         wake.trySend(Unit)
     }
 
+    /** The refresh button: agrees to connect if not yet, and connects or checks the lights now. */
+    fun connectNow() {
+        allowConnect()
+        refresh()
+    }
+
     suspend fun reconnect() {
         runCatching { link() }
     }

@@ -11,6 +11,10 @@ lights over Bluetooth until their colour matches it.
 - **Calibration:** one tap steps a trusted light (e.g. a Forza 60C) through
   2700–6500 K and corrects the phone's colour matrices from what it reads. Manual
   calibration is also available.
+- **Set ambient:** one tap switches the lights off, reads the room until it's steady,
+  saves it as the reference (named with the day and time) and turns the lights back on.
+  Each reference shows its age, in amber after 3 hours. A reference more than 6 hours
+  old isn't picked up when the app starts; it's offered with "Use last" instead.
 - **Match:** sets a light's CCT and G/M, reads it on the card with the ambient
   subtracted (the light blinks off once to read the ambient), and adjusts until it's
   within 5 mired and 1.5 tint. Brightness is left where you set it. If a light can't

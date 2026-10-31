@@ -26,7 +26,6 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -41,10 +40,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import app.lightset.ui.LightSetTheme
 import app.lightset.ui.LightsScreen
 import app.lightset.ui.LightsViewModel
 import app.lightset.ui.MeterScreen
@@ -82,7 +83,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
+            LightSetTheme {
                 PermissionGate {
                     ConnectPrompt(rig)
                     var tab by rememberSaveable { mutableIntStateOf(0) }
@@ -160,6 +161,11 @@ private fun ConnectPrompt(rig: LightRig) {
     val allowed by rig.connectAllowed.collectAsStateWithLifecycle()
     val nodes by rig.nodes.collectAsStateWithLifecycle()
     var dismissed by rememberSaveable { mutableStateOf(false) }
+    // "Not now" lasts until the app is next brought back, then it asks again.
+    LifecycleStartEffect(Unit) {
+        dismissed = false
+        onStopOrDispose { }
+    }
     if (allowed || dismissed || nodes.isEmpty()) return
     AlertDialog(
         onDismissRequest = { dismissed = true },

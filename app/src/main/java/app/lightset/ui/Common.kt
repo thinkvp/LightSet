@@ -8,6 +8,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -44,6 +47,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -96,9 +100,7 @@ fun ValueControl(
             Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(format(value), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, maxLines = 1)
         }
-        IconButton(onClick = { onChange((value - step).coerceIn(range)) }, enabled = enabled, modifier = Modifier.size(36.dp)) {
-            Icon(Icons.Filled.Remove, contentDescription = "Decrease $label", modifier = Modifier.size(18.dp))
-        }
+        StepButton(Icons.Filled.Remove, "Decrease $label", enabled) { onChange((value - step).coerceIn(range)) }
         val position = toSlider(value).coerceIn(0f, 1f)
         val change: (Float) -> Unit = { onChange(fromSlider(it).coerceIn(range)) }
         if (track == null) {
@@ -111,20 +113,18 @@ fun ValueControl(
                 modifier = Modifier.weight(1f).alpha(if (enabled) 1f else 0.4f),
                 thumb = {
                     Box(
-                        Modifier.size(22.dp)
+                        Modifier.size(18.dp)
                             .border(1.dp, Color(0x99000000), CircleShape)
                             .padding(1.dp)
-                            .border(3.dp, Color.White, CircleShape)
+                            .border(2.5.dp, Color.White, CircleShape)
                     )
                 },
                 track = {
-                    Box(Modifier.fillMaxWidth().height(12.dp).background(track, RoundedCornerShape(6.dp)))
+                    Box(Modifier.fillMaxWidth().height(6.dp).background(track, RoundedCornerShape(3.dp)))
                 },
             )
         }
-        IconButton(onClick = { onChange((value + step).coerceIn(range)) }, enabled = enabled, modifier = Modifier.size(36.dp)) {
-            Icon(Icons.Filled.Add, contentDescription = "Increase $label", modifier = Modifier.size(18.dp))
-        }
+        StepButton(Icons.Filled.Add, "Increase $label", enabled) { onChange((value + step).coerceIn(range)) }
     }
     if (editing) {
         var text by remember { mutableStateOf(value.toString()) }
@@ -149,6 +149,55 @@ fun ValueControl(
             dismissButton = { TextButton(onClick = { editing = false }) { Text("Cancel") } },
         )
     }
+}
+
+/** The row at the top of each tab, laid out the same on both so the menu stays put. */
+@Composable
+fun TabHeader(modifier: Modifier = Modifier, content: @Composable RowScope.() -> Unit) {
+    Row(
+        modifier.fillMaxWidth().padding(top = 8.dp).height(48.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        content = content,
+    )
+}
+
+/** A − or + for fine steps: a small outlined circle in a 36dp touch target. */
+@Composable
+fun StepButton(icon: ImageVector, description: String, enabled: Boolean = true, onClick: () -> Unit) {
+    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(36.dp)) {
+        Box(
+            Modifier.size(26.dp).border(0.5.dp, MaterialTheme.colorScheme.outline, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(icon, contentDescription = description, modifier = Modifier.size(16.dp))
+        }
+    }
+}
+
+/**
+ * A card with a thick stripe down its left edge in a light's [color], so what each
+ * light is doing reads across the room. [handle] goes on the stripe (drag to reorder).
+ */
+@Composable
+fun StripeCard(color: Color, modifier: Modifier = Modifier, handle: Modifier = Modifier, content: @Composable () -> Unit) {
+    Row(
+        modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Min)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(topEnd = 12.dp, bottomEnd = 12.dp)),
+    ) {
+        Box(handle.fillMaxHeight().width(18.dp)) {
+            Box(Modifier.fillMaxHeight().width(10.dp).background(color))
+        }
+        Box(Modifier.weight(1f)) { content() }
+    }
+}
+
+/** What a light's stripe or swatch shows: off grey, its colour, or its white. */
+fun lightColor(s: LightRig.LightState?): Color = when {
+    s == null || !s.on -> Color(0xFF3A3A3E)
+    s.mode == LightRig.Mode.HSI -> Color.hsv(s.hue.toFloat(), s.sat / 100f, 1f)
+    else -> kelvinColor(s.cct)
 }
 
 /** A small preset button filled with the colour it sets. */
