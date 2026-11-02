@@ -12,13 +12,29 @@ android {
         applicationId = "app.lightset"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1"
+        // CI passes the run number so each release installs over the last.
+        val buildNumber = (project.findProperty("buildNumber") as String?)?.toInt()
+        versionCode = buildNumber ?: 1
+        versionName = if (buildNumber != null) "0.1.$buildNumber" else "0.1"
+    }
+
+    // The release key lives in GitHub secrets; CI exposes it through these env vars.
+    val releaseKeystore = System.getenv("RELEASE_KEYSTORE")
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("RELEASE_KEYSTORE_PASSWORD")
+                keyAlias = "lightset"
+                keyPassword = System.getenv("RELEASE_KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (releaseKeystore != null) signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {
