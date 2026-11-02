@@ -5,3 +5,6 @@ build/
 *.iml
 .kotlin/
 .claude/settings.local.json
+
+# Scratch notes, not part of the project
+docs/sony-camera-control.md
