@@ -1,7 +1,9 @@
 package app.lightset
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -12,6 +14,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -50,6 +53,8 @@ import app.lightset.ui.LightsScreen
 import app.lightset.ui.LightsViewModel
 import app.lightset.ui.MeterScreen
 import app.lightset.ui.MeterViewModel
+import app.lightset.update.Update
+import app.lightset.update.UpdateChecker
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -84,6 +89,7 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             LightSetTheme {
+                UpdatePrompt()
                 PermissionGate {
                     ConnectPrompt(rig)
                     var tab by rememberSaveable { mutableIntStateOf(0) }
@@ -179,5 +185,40 @@ private fun ConnectPrompt(rig: LightRig) {
         },
         confirmButton = { TextButton(onClick = rig::allowConnect) { Text("Connect") } },
         dismissButton = { TextButton(onClick = { dismissed = true }) { Text("Not now") } },
+    )
+}
+
+/**
+ * Offers a newer release from GitHub, checked once each time the app starts. "Later"
+ * hides it for a day or a week; dismissing it hides it until the next start.
+ */
+@Composable
+private fun UpdatePrompt() {
+    val context = LocalContext.current
+    val checker = remember { UpdateChecker(context.applicationContext) }
+    var update by remember { mutableStateOf<Update?>(null) }
+    LaunchedEffect(Unit) { update = checker.check() }
+    val u = update ?: return
+    AlertDialog(
+        onDismissRequest = { update = null },
+        title = { Text("Update available") },
+        text = {
+            Text(
+                "LightSet ${u.version} is out (you have ${checker.installed}). Update downloads " +
+                    "the new version in your browser; open it to install over this one.",
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                update = null
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u.url)))
+            }) { Text("Update") }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = { checker.snooze(1); update = null }) { Text("Tomorrow") }
+                TextButton(onClick = { checker.snooze(7); update = null }) { Text("In a week") }
+            }
+        },
     )
 }

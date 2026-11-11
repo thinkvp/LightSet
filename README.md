@@ -35,6 +35,9 @@ lights over Bluetooth until their colour matches it.
   up by hand back to the app's settings. Opening the Lights tab checks the lights (and
   reconnects) straight away.
 
+- **Updates:** when the app starts it checks GitHub for a newer release and offers to
+  download it (installs over the current version), or to ask again tomorrow or in a week.
+
 ## How the lights are controlled
 
 Nanlite lights with Feasycom Bluetooth modules are Bluetooth Mesh nodes. They take
