@@ -16,6 +16,9 @@ android {
         val buildNumber = (project.findProperty("buildNumber") as String?)?.toInt()
         versionCode = buildNumber ?: 1
         versionName = if (buildNumber != null) "0.1.$buildNumber" else "0.1"
+        // MapLibre's native code for 64-bit ARM phones only (the Edge 60 Pro and nearly every
+        // phone since 2019); all four ABIs would double the APK.
+        ndk { abiFilters += "arm64-v8a" }
     }
 
     // The release key lives in GitHub secrets; CI exposes it through these env vars.
@@ -67,6 +70,8 @@ dependencies {
     implementation("androidx.camera:camera-camera2:$cameraX")
     implementation("androidx.camera:camera-lifecycle:$cameraX")
     implementation("androidx.camera:camera-view:$cameraX")
+    // The Sun tab's map (OpenStreetMap tiles from OpenFreeMap, no key needed).
+    implementation("org.maplibre.gl:android-sdk:12.3.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")

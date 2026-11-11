@@ -106,7 +106,7 @@ class PlaceSource(private val context: Context) {
     }
 
     /** The town or suburb, from the platform geocoder (needs a connection). */
-    private suspend fun placeName(lat: Double, lon: Double): String? {
+    suspend fun placeName(lat: Double, lon: Double): String? {
         if (!Geocoder.isPresent()) return null
         val geocoder = Geocoder(context)
         val address: Address? = withTimeoutOrNull(10_000) {
@@ -130,6 +130,35 @@ class PlaceSource(private val context: Context) {
             }
         }
         return address?.let { it.subLocality ?: it.locality ?: it.subAdminArea ?: it.adminArea }
+    }
+
+    /** A place by name or address, from the platform geocoder (needs a connection). */
+    suspend fun search(query: String): Place? {
+        if (!Geocoder.isPresent()) return null
+        val geocoder = Geocoder(context)
+        val address: Address? = withTimeoutOrNull(10_000) {
+            if (Build.VERSION.SDK_INT >= 33) {
+                suspendCancellableCoroutine { cont ->
+                    geocoder.getFromLocationName(query, 1, object : Geocoder.GeocodeListener {
+                        override fun onGeocode(addresses: MutableList<Address>) {
+                            if (cont.isActive) cont.resume(addresses.firstOrNull())
+                        }
+
+                        override fun onError(errorMessage: String?) {
+                            if (cont.isActive) cont.resume(null)
+                        }
+                    })
+                }
+            } else {
+                withContext(Dispatchers.IO) {
+                    @Suppress("DEPRECATION")
+                    runCatching { geocoder.getFromLocationName(query, 1)?.firstOrNull() }.getOrNull()
+                }
+            }
+        }
+        val a = address ?: return null
+        val name = a.featureName?.takeIf { it != a.subThoroughfare } ?: a.subLocality ?: a.locality ?: query
+        return Place(a.latitude, a.longitude, name, System.currentTimeMillis())
     }
 
     fun savedForecast(): Forecast? = runCatching {

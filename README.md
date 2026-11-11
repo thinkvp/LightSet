@@ -35,13 +35,25 @@ lights over Bluetooth until their colour matches it.
   up by hand back to the app's settings. Opening the Lights tab checks the lights (and
   reconnects) straight away.
 
-- **Sun:** sunrise, sunset (with compass direction), solar noon, golden hour (+6° to −4°)
-  and blue hour (−4° to −8°) for where the phone is, on any date. A graph shows the sun's
-  height through the day, with each hour's sky from the forecast underneath, and an hourly
-  list gives the sun's direction and height, cloud, rain chance and temperature. The sky
-  is judged by how much of a clear sky's direct sunlight gets through (Open-Meteo's
-  forecast, 16 days ahead), so thin high cloud still reads as sun. It uses approximate
-  location, and keeps the last place and forecast for use without signal.
+- **Sun:** where the sun will be and what the sky will do, in three views:
+  - **Camera** (shown on opening): the day's sun path over the live camera, coloured for
+    daylight, golden hour (+6° to −4°) and blue hour (−4° to −8°), with each hour as its
+    forecast sky's icon, compass points along the horizon and the sun now. A slider painted
+    with each hour's sky picks a time. Phone compasses drift, so "line up" (the crosshair)
+    lets you tap the real sun to correct it until the app closes.
+  - **Day:** sunrise and sunset with compass directions, solar noon, golden and blue hour,
+    a graph of the sun's height over each hour's sky, and an hourly list of the sun's
+    direction and height, cloud, rain chance and temperature.
+  - **Map:** the sun drawn around a place on an OpenStreetMap map (OpenFreeMap tiles): the
+    day's path as a ring (higher is nearer the middle), sunrise and sunset lines, and the sun
+    at the slider's time with its shadow. Hold the map to drop a pin, or search by name;
+    Day then shows the pin too, in its own time zone.
+
+  The sky is judged by how much of a clear sky's direct sunlight the Open-Meteo forecast
+  says gets through (16 days ahead), so thin high cloud still reads as sun. The forecast is
+  fetched again on opening the tab unless it's under 10 minutes old. It uses approximate
+  location, and keeps the last place and forecast for use without signal. The APK is built
+  for 64-bit ARM phones only, as the map's native code for every ABI would double its size.
 - **Updates:** when the app starts it checks GitHub for a newer release and offers to
   download it (installs over the current version), or to ask again tomorrow or in a week.
 

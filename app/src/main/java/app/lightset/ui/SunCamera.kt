@@ -90,6 +90,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.lightset.sun.HourRow
 import app.lightset.sun.Orientation
 import app.lightset.sun.OrientationReading
+import app.lightset.sun.Place
 import app.lightset.sun.Phase
 import app.lightset.sun.SkyProjection
 import app.lightset.sun.Sky
@@ -112,14 +113,14 @@ private data class LensInfo(
     val streamShort: Int,
 )
 
-private val GoldenOrange = Color(0xFFFF9A3C)
-private val Scrim = Color(0xAA000000)
+internal val GoldenOrange = Color(0xFFFF9A3C)
+internal val Scrim = Color(0xAA000000)
 
 /** Icons drawn into the overlay, as painters (a Canvas can't hold composables). */
-private class OverlayIcons(val sky: Map<Sky, Painter>, val sun: Painter, val twilight: Painter)
+internal class OverlayIcons(val sky: Map<Sky, Painter>, val sun: Painter, val twilight: Painter)
 
 @Composable
-private fun rememberOverlayIcons(): OverlayIcons {
+internal fun rememberOverlayIcons(): OverlayIcons {
     val sky = Sky.entries.associateWith { rememberVectorPainter(skyIcon(it)) }
     val sun = rememberVectorPainter(Icons.Filled.WbSunny)
     val twilight = rememberVectorPainter(Icons.Filled.WbTwilight)
@@ -140,15 +141,9 @@ internal fun SunCamera(state: SunUiState, vm: SunViewModel, fmt: TimeFormats) {
     val reading by readings.collectAsStateWithLifecycle(initialValue = null)
     val declination = remember(place) { Orientation.declination(place.lat, place.lon) }
     val icons = rememberOverlayIcons()
-    val dayStart = state.date.atStartOfDay(state.zone)
-
-    // The time on the slider: now for today, solar noon on other days.
-    val defaultMinute = if (state.date == state.today) Duration.between(dayStart, state.now).toMinutes().toInt()
-    else state.day?.noon?.let { Duration.between(dayStart, it).toMinutes().toInt() } ?: 720
-    var minute by rememberSaveable(state.date) { mutableIntStateOf(defaultMinute) }
-    val selectedTime = dayStart.plusMinutes(minute.toLong())
-    val selected = remember(place, selectedTime) { Sun.position(place.lat, place.lon, selectedTime) }
-    val selectedHour = state.hours.lastOrNull { !it.time.isAfter(selectedTime) }
+    val sel = rememberSelection(state, place)
+    val selected = sel.pos
+    val selectedTime = sel.time
     val sunNow = remember(place, state.now) { Sun.position(place.lat, place.lon, state.now) }
     var aligning by remember { mutableStateOf(false) }
 
@@ -192,8 +187,31 @@ internal fun SunCamera(state: SunUiState, vm: SunViewModel, fmt: TimeFormats) {
                 }
             }
         }
-        TimePanel(state, vm, fmt, minute, { minute = it }, selected, selectedTime, selectedHour, defaultMinute)
+        TimePanel(state, vm, fmt, sel)
     }
+}
+
+/** The time picked on the slider, where the sun is then, and that hour's row. */
+internal class Selection(
+    val minute: Int,
+    val setMinute: (Int) -> Unit,
+    val defaultMinute: Int,
+    val time: ZonedDateTime,
+    val pos: SunPos,
+    val hour: HourRow?,
+)
+
+/** The slider's time for [place]: now for today, solar noon on other days, until it's moved. */
+@Composable
+internal fun rememberSelection(state: SunUiState, place: Place): Selection {
+    val dayStart = state.date.atStartOfDay(state.zone)
+    val defaultMinute = if (state.date == state.today) Duration.between(dayStart, state.now).toMinutes().toInt()
+    else state.day?.noon?.let { Duration.between(dayStart, it).toMinutes().toInt() } ?: 720
+    // Back to the default for a new day, place or time zone.
+    var minute by rememberSaveable(state.date, state.zone.id, place.lat, place.lon) { mutableIntStateOf(defaultMinute) }
+    val time = dayStart.plusMinutes(minute.toLong())
+    val pos = remember(place.lat, place.lon, time) { Sun.position(place.lat, place.lon, time) }
+    return Selection(minute, { minute = it }, defaultMinute, time, pos, state.hours.lastOrNull { !it.time.isAfter(time) })
 }
 
 private class CameraPreviewState(val view: PreviewView) {
@@ -303,12 +321,12 @@ private fun SkyOverlay(
     }
 }
 
-private val labelStyle = TextStyle(color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-private val smallLabel = labelStyle.copy(fontSize = 10.sp)
-private val shadowColor = Color(0xCC000000)
+internal val labelStyle = TextStyle(color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+internal val smallLabel = labelStyle.copy(fontSize = 10.sp)
+internal val shadowColor = Color(0xCC000000)
 
 /** Text with a dark shadow so it reads over sky and buildings alike. */
-private fun DrawScope.label(measurer: TextMeasurer, text: String, at: Offset, style: TextStyle = labelStyle) {
+internal fun DrawScope.label(measurer: TextMeasurer, text: String, at: Offset, style: TextStyle = labelStyle) {
     // Measured without limits and drawn as layouts: drawing by text constrains it to the
     // space left on the canvas, which throws for labels partly past the edge.
     val layout = measurer.measure(text, style)
@@ -321,13 +339,13 @@ private fun DrawScope.label(measurer: TextMeasurer, text: String, at: Offset, st
 }
 
 /** Text centred on [center]. */
-private fun DrawScope.centredLabel(measurer: TextMeasurer, text: String, center: Offset, style: TextStyle = labelStyle) {
+internal fun DrawScope.centredLabel(measurer: TextMeasurer, text: String, center: Offset, style: TextStyle = labelStyle) {
     val s = measurer.measure(text, style).size
     label(measurer, text, Offset(center.x - s.width / 2f, center.y - s.height / 2f), style)
 }
 
 /** An icon [sizePx] across, centred on [center], tinted [tint]. */
-private fun DrawScope.icon(p: Painter, center: Offset, sizePx: Float, tint: Color) {
+internal fun DrawScope.icon(p: Painter, center: Offset, sizePx: Float, tint: Color) {
     translate(center.x - sizePx / 2, center.y - sizePx / 2) {
         with(p) { draw(GeoSize(sizePx, sizePx), colorFilter = ColorFilter.tint(tint)) }
     }
@@ -382,7 +400,7 @@ private fun DrawScope.drawTrack(proj: SkyProjection, track: List<SunPos>) {
     }
 }
 
-private fun phaseColor(p: Phase): Color = when (p) {
+internal fun phaseColor(p: Phase): Color = when (p) {
     Phase.DAY -> SunAmber
     Phase.GOLDEN -> GoldenOrange
     Phase.BLUE -> BlueHour
@@ -507,7 +525,7 @@ private fun CompassControls(
 }
 
 @Composable
-private fun RoundButton(icon: ImageVector, description: String, tint: Color, onClick: () -> Unit) {
+internal fun RoundButton(icon: ImageVector, description: String, tint: Color, onClick: () -> Unit) {
     Box(
         Modifier.size(44.dp).background(Scrim, CircleShape).clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
@@ -533,20 +551,15 @@ private fun CompassChip(color: Color, text: String) {
  * and the date.
  */
 @Composable
-private fun TimePanel(
-    state: SunUiState,
-    vm: SunViewModel,
-    fmt: TimeFormats,
-    minute: Int,
-    onMinute: (Int) -> Unit,
-    selected: SunPos,
-    selectedTime: ZonedDateTime,
-    hour: HourRow?,
-    defaultMinute: Int,
-) {
+internal fun TimePanel(state: SunUiState, vm: SunViewModel, fmt: TimeFormats, sel: Selection) {
+    val minute = sel.minute
+    val onMinute = sel.setMinute
+    val defaultMinute = sel.defaultMinute
+    val selected = sel.pos
+    val hour = sel.hour
     Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(selectedTime.format(fmt.time), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+            Text(sel.time.format(fmt.time), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
             Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
                 if (minute != defaultMinute) {
                     IconButton(onClick = { onMinute(defaultMinute) }) {

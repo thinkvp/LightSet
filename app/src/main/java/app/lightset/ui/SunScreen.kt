@@ -30,6 +30,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AcUnit
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
@@ -56,6 +58,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
@@ -115,13 +118,19 @@ fun SunScreen(vm: SunViewModel) {
         TabHeader(Modifier.padding(start = 16.dp, end = 4.dp)) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    state.place?.label ?: "Sun",
+                    state.shownPlace?.label ?: "Sun",
                     style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
                 StatusLine(state, fmt)
             }
-            if (state.hasPermission) {
-                if (state.locating || state.fetching) {
+            // A pin is showing: back to where the phone is.
+            if (state.usingPin) {
+                IconButton(onClick = vm::clearPin) {
+                    Icon(Icons.Filled.MyLocation, contentDescription = "Back to my location")
+                }
+            }
+            if (state.hasPermission || state.usingPin) {
+                if (state.locating || state.shownFetching) {
                     Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                     }
@@ -134,6 +143,7 @@ fun SunScreen(vm: SunViewModel) {
         }
         Box(Modifier.weight(1f)) {
             when {
+                state.mode == SunMode.MAP -> SunMap(state, vm, fmt)
                 !state.hasPermission && state.place == null -> LocationPermission(vm)
                 state.mode == SunMode.CAMERA -> SunCamera(state, vm, fmt)
                 else -> DayView(state, vm, fmt)
@@ -186,6 +196,7 @@ private fun ModeBar(mode: SunMode, onMode: (SunMode) -> Unit) {
     ) {
         ModeButton(Icons.Filled.CameraAlt, "Camera", mode == SunMode.CAMERA, { onMode(SunMode.CAMERA) }, Modifier.weight(1f))
         ModeButton(Icons.Filled.Schedule, "Day", mode == SunMode.DAY, { onMode(SunMode.DAY) }, Modifier.weight(1f))
+        ModeButton(Icons.Filled.Map, "Map", mode == SunMode.MAP, { onMode(SunMode.MAP) }, Modifier.weight(1f))
     }
 }
 
@@ -193,10 +204,11 @@ private fun ModeBar(mode: SunMode, onMode: (SunMode) -> Unit) {
 private fun ModeButton(icon: ImageVector, label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier) {
     val content: @Composable RowScope.() -> Unit = {
         Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
-        Text("  $label")
+        Text(" $label", maxLines = 1)
     }
-    if (selected) Button(onClick = onClick, modifier = modifier, content = content)
-    else OutlinedButton(onClick = onClick, modifier = modifier, content = content)
+    val padding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+    if (selected) Button(onClick = onClick, modifier = modifier, contentPadding = padding, content = content)
+    else OutlinedButton(onClick = onClick, modifier = modifier, contentPadding = padding, content = content)
 }
 
 /** Formats times in the phone's 12 or 24 hour style. */
@@ -216,11 +228,11 @@ private fun StatusLine(state: SunUiState, fmt: TimeFormats) {
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     val (text, color) = when {
         state.locating -> "Finding location…" to muted
-        state.fetching -> "Getting forecast…" to muted
-        state.forecastError != null -> state.forecastError to WarnAmber
+        state.shownFetching -> "Getting forecast…" to muted
+        state.shownForecastError != null -> state.shownForecastError!! to WarnAmber
         state.locationError != null -> state.locationError to WarnAmber
-        state.forecast != null -> {
-            val at = state.forecast.fetchedAt.atZone(state.zone)
+        state.shownForecast != null -> {
+            val at = state.shownForecast!!.fetchedAt.atZone(state.zone)
             "Forecast from " + (if (at.toLocalDate() == state.today) at.format(fmt.time) else at.format(fmt.dayTime)) to muted
         }
         else -> "" to muted
@@ -434,7 +446,7 @@ private fun DayGraph(state: SunUiState) {
 
 @Composable
 private fun ForecastNote(state: SunUiState) {
-    if (state.forecast == null || state.dateInForecast) return
+    if (state.shownForecast == null || state.dateInForecast) return
     Text(
         if (state.date.isBefore(state.today)) "No forecast for past days."
         else "No forecast this far ahead (it covers ${OpenMeteo.DAYS} days).",
