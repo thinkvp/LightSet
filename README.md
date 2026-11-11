@@ -72,5 +72,4 @@ Install on a USB-connected phone with USB debugging enabled:
 /f/AndroidTools/sdk/platform-tools/adb.exe install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Note: the mesh network key is stored on the phone and seeded in `MeshStore`; keep this
-repository private.
+Each install makes its own random mesh network key, stored on the phone.

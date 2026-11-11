@@ -5,6 +5,7 @@ import app.lightset.ble.hex
 import app.lightset.color.LightLimits
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.SecureRandom
 
 /** What a Nanlite model can do; picked from the light's Bluetooth name. */
 enum class LightModel(val label: String, val limits: LightLimits, val rgb: Boolean) {
@@ -57,13 +58,13 @@ data class MeshNode(
 
 /**
  * Our Bluetooth Mesh network: its key, IV index, our own address and the lights in it.
- * Seeded with the network the first Forza 60C joined via nRF Mesh, so that light keeps
- * working without a reset.
+ * Each install makes its own random network key the first time it runs.
  */
 class MeshStore(context: Context) {
     private val prefs = context.getSharedPreferences("mesh_net", Context.MODE_PRIVATE)
 
-    val netKey: ByteArray = prefs.getString(KEY_NET, null)?.let(::unhex) ?: SEED_NET_KEY.also {
+    val netKey: ByteArray = prefs.getString(KEY_NET, null)?.let(::unhex) ?: ByteArray(16).also {
+        SecureRandom().nextBytes(it)
         prefs.edit().putString(KEY_NET, it.hex()).apply()
     }
     val ivIndex: Int get() = prefs.getInt(KEY_IV, 0)
@@ -73,7 +74,7 @@ class MeshStore(context: Context) {
 
     fun nodes(): List<MeshNode> {
         val raw = prefs.getString(KEY_NODES, null)
-            ?: return listOf(SEED_NODE).also { save(it) }
+            ?: return emptyList()
         val a = JSONArray(raw)
         return (0 until a.length()).map { MeshNode.fromJson(a.getJSONObject(it)) }
     }
@@ -98,7 +99,5 @@ class MeshStore(context: Context) {
         const val KEY_NET = "net_key"
         const val KEY_IV = "iv_index"
         const val KEY_NODES = "nodes"
-        val SEED_NET_KEY = ByteArray(16) { "D605BE48189BE64572434CCE4B5ABDAF".substring(it * 2, it * 2 + 2).toInt(16).toByte() }
-        val SEED_NODE = MeshNode(0x0002, "Forza 60C", LightModel.FORZA_60C, "DC:0D:30:B3:60:4A", null)
     }
 }
