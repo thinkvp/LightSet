@@ -92,10 +92,10 @@ object Sun {
         )
     }
 
-    /** The sun's height through the day, every [stepMinutes] from midnight to midnight. */
-    fun altitudes(lat: Double, lon: Double, date: LocalDate, zone: ZoneId, stepMinutes: Long = 10): List<Double> {
+    /** Where the sun is through the day, every [stepMinutes] from midnight to midnight. */
+    fun track(lat: Double, lon: Double, date: LocalDate, zone: ZoneId, stepMinutes: Long = 10): List<SunPos> {
         val start = date.atStartOfDay(zone)
-        return (0..(24 * 60 / stepMinutes)).map { position(lat, lon, start.plusMinutes(it * stepMinutes)).altitude }
+        return (0..(24 * 60 / stepMinutes)).map { position(lat, lon, start.plusMinutes(it * stepMinutes)) }
     }
 
     private val POINTS = arrayOf("N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW")

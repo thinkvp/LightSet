@@ -91,7 +91,7 @@ class SunTest {
 
     @Test
     fun altitudeCurveCoversTheDay() {
-        val curve = Sun.altitudes(lat, lon, LocalDate.of(2026, 6, 21), london, 10)
+        val curve = Sun.track(lat, lon, LocalDate.of(2026, 6, 21), london, 10).map { it.altitude }
         assertEquals(145, curve.size)
         assertEquals(62.0, curve.max(), 0.5)
         assertTrue(curve.first() < 0)

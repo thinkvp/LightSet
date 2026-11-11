@@ -7,10 +7,12 @@ import app.lightset.sun.Forecast
 import app.lightset.sun.HourRow
 import app.lightset.sun.OpenMeteo
 import app.lightset.sun.Place
+import app.lightset.sun.Orientation
 import app.lightset.sun.PlaceSource
 import app.lightset.sun.Sun
 import app.lightset.sun.SunDay
 import app.lightset.sun.SunHours
+import app.lightset.sun.SunPos
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -25,7 +27,10 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
 
+enum class SunMode { DAY, CAMERA }
+
 data class SunUiState(
+    val mode: SunMode = SunMode.CAMERA,
     val hasPermission: Boolean = false,
     val place: Place? = null,
     val locating: Boolean = false,
@@ -34,13 +39,24 @@ data class SunUiState(
     val zone: ZoneId = ZoneId.systemDefault(),
     val day: SunDay? = null,
     val hours: List<HourRow> = emptyList(),
-    /** The sun's height every [CURVE_STEP_MIN] minutes from midnight, for the day graph. */
+    /** Where the sun is every [CURVE_STEP_MIN] minutes from midnight: the camera's path. */
+    val track: List<SunPos> = emptyList(),
+    /** The sun's height from [track], for the day graph. */
     val curve: List<Double> = emptyList(),
     val forecast: Forecast? = null,
     val fetching: Boolean = false,
     val forecastError: String? = null,
     val now: ZonedDateTime = ZonedDateTime.now(),
+    /**
+     * Degrees to add to the compass, from lining up on the sun. Kept until the app closes:
+     * compass error changes with what's nearby, so an old one is as likely wrong as right.
+     */
+    val headingCorrection: Double = 0.0,
+    val aligned: Boolean = false,
 ) {
+    /** Magnetic declination where the phone is: true north to the compass's north. */
+    val declination: Double get() = place?.let { Orientation.declination(it.lat, it.lon) } ?: 0.0
+
     val today: LocalDate get() = now.toLocalDate()
 
     /** Whether the forecast reaches [date] at all. */
@@ -67,7 +83,11 @@ data class SunUiState(
 class SunViewModel(app: Application) : AndroidViewModel(app) {
     private val source = PlaceSource(app)
     private val _state = MutableStateFlow(
-        SunUiState(hasPermission = source.hasPermission(), place = source.saved(), forecast = source.savedForecast()),
+        SunUiState(
+            hasPermission = source.hasPermission(),
+            place = source.saved(),
+            forecast = source.savedForecast(),
+        ),
     )
     val state: StateFlow<SunUiState> = _state
 
@@ -112,6 +132,20 @@ class SunViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun shiftDate(days: Long) = setDate(_state.value.date.plusDays(days))
+
+    /** Camera (the sun's path over the live view) or Day (times and forecast). */
+    fun setMode(mode: SunMode) = _state.update { it.copy(mode = mode) }
+
+    /**
+     * The sun was tapped at [tappedAzimuth] (true, as the compass sees it) while it was really
+     * at [sunAzimuth]: corrects the compass by the difference from now on.
+     */
+    fun alignOnSun(tappedAzimuth: Double, sunAzimuth: Double) {
+        val diff = ((sunAzimuth - tappedAzimuth + 540.0) % 360.0) - 180.0
+        _state.update { it.copy(headingCorrection = it.headingCorrection + diff, aligned = true) }
+    }
+
+    fun clearAlignment() = _state.update { it.copy(headingCorrection = 0.0, aligned = false) }
 
     private fun locate(force: Boolean = false) {
         if (locateJob?.isActive == true) return
@@ -167,14 +201,19 @@ class SunViewModel(app: Application) : AndroidViewModel(app) {
         computeJob = viewModelScope.launch {
             // A forecast for somewhere else (more than 5 km away) isn't shown against this place.
             val forecast = s.forecast?.takeIf { place.distanceKm(it.lat, it.lon) <= 5.0 }
-            val (day, hours, curve) = withContext(Dispatchers.Default) {
+            val (day, hours, track) = withContext(Dispatchers.Default) {
                 Triple(
                     Sun.day(place.lat, place.lon, s.date, s.zone),
                     SunHours.hours(place.lat, place.lon, s.date, s.zone, forecast),
-                    Sun.altitudes(place.lat, place.lon, s.date, s.zone, SunUiState.CURVE_STEP_MIN),
+                    Sun.track(place.lat, place.lon, s.date, s.zone, SunUiState.CURVE_STEP_MIN),
                 )
             }
-            _state.update { if (it.date == s.date && it.place == place) it.copy(day = day, hours = hours, curve = curve) else it }
+            _state.update {
+                if (it.date == s.date && it.place == place) {
+                    it.copy(day = day, hours = hours, track = track, curve = track.map { p -> p.altitude })
+                } else it
+            }
         }
     }
+
 }

@@ -29,6 +29,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AcUnit
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Cloud
@@ -51,6 +53,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -101,6 +107,8 @@ fun SunScreen(vm: SunViewModel) {
         vm.onShown()
         onPauseOrDispose { }
     }
+    // Opening the tab starts on the camera.
+    LaunchedEffect(Unit) { vm.setMode(SunMode.CAMERA) }
     val is24h = DateFormat.is24HourFormat(LocalContext.current)
     val fmt = remember(is24h) { TimeFormats(is24h) }
     Column(Modifier.fillMaxSize()) {
@@ -124,43 +132,78 @@ fun SunScreen(vm: SunViewModel) {
                 }
             }
         }
-        if (!state.hasPermission && state.place == null) {
-            LocationPermission(vm)
-            return@Column
-        }
-        Column(
-            Modifier
-                .weight(1f)
-                .verticalScroll(rememberScrollState())
-                .padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            if (!state.hasPermission) LocationPermission(vm, compact = true)
-            DateRow(state, vm, fmt)
-            val day = state.day
-            if (day == null) {
-                Text(
-                    if (state.locating) "Finding location…" else "No location yet",
-                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                return@Column
+        Box(Modifier.weight(1f)) {
+            when {
+                !state.hasPermission && state.place == null -> LocationPermission(vm)
+                state.mode == SunMode.CAMERA -> SunCamera(state, vm, fmt)
+                else -> DayView(state, vm, fmt)
             }
-            SunTimesCard(day, fmt)
-            DayGraph(state)
-            ForecastNote(state)
-            HourList(state, fmt)
-            Text(
-                "Weather data by Open-Meteo.com (CC BY 4.0)",
-                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
+        HorizontalDivider()
+        ModeBar(state.mode, vm::setMode)
     }
 }
 
+@Composable
+private fun DayView(state: SunUiState, vm: SunViewModel, fmt: TimeFormats) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        if (!state.hasPermission) LocationPermission(vm, compact = true)
+        DateRow(state, vm, fmt)
+        val day = state.day
+        if (day == null) {
+            Text(
+                if (state.locating) "Finding location…" else "No location yet",
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@Column
+        }
+        SunTimesCard(day, fmt)
+        DayGraph(state)
+        ForecastNote(state)
+        HourList(state, fmt)
+        Text(
+            "Weather data by Open-Meteo.com (CC BY 4.0)",
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * Camera (the sun's path over the live view) or Day (times and forecast), along the bottom
+ * like the Lights tab's scene buttons. The one showing is filled.
+ */
+@Composable
+private fun ModeBar(mode: SunMode, onMode: (SunMode) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        ModeButton(Icons.Filled.CameraAlt, "Camera", mode == SunMode.CAMERA, { onMode(SunMode.CAMERA) }, Modifier.weight(1f))
+        ModeButton(Icons.Filled.Schedule, "Day", mode == SunMode.DAY, { onMode(SunMode.DAY) }, Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun ModeButton(icon: ImageVector, label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier) {
+    val content: @Composable RowScope.() -> Unit = {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
+        Text("  $label")
+    }
+    if (selected) Button(onClick = onClick, modifier = modifier, content = content)
+    else OutlinedButton(onClick = onClick, modifier = modifier, content = content)
+}
+
 /** Formats times in the phone's 12 or 24 hour style. */
-private class TimeFormats(is24h: Boolean) {
+internal class TimeFormats(is24h: Boolean) {
     val time: DateTimeFormatter = DateTimeFormatter.ofPattern(if (is24h) "HH:mm" else "h:mm a")
     val hour: DateTimeFormatter = DateTimeFormatter.ofPattern(if (is24h) "HH:mm" else "h a")
+    val shortHour: DateTimeFormatter = DateTimeFormatter.ofPattern(if (is24h) "HH" else "ha")
     val dayTime: DateTimeFormatter = DateTimeFormatter.ofPattern(if (is24h) "EEE HH:mm" else "EEE h:mm a")
     val date: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE d MMM")
 
@@ -221,7 +264,7 @@ private fun LocationPermission(vm: SunViewModel, compact: Boolean = false) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DateRow(state: SunUiState, vm: SunViewModel, fmt: TimeFormats) {
+internal fun DateRow(state: SunUiState, vm: SunViewModel, fmt: TimeFormats) {
     var picking by remember { mutableStateOf(false) }
     Row(verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = { vm.shiftDate(-1) }) { Icon(Icons.Filled.ChevronLeft, contentDescription = "Previous day") }
@@ -475,7 +518,7 @@ private fun weatherDetail(h: HourRow): String? {
     return parts.joinToString(" · ").replaceFirstChar { it.uppercase() }.ifEmpty { null }
 }
 
-private fun skyIcon(sky: Sky): ImageVector = when (sky) {
+internal fun skyIcon(sky: Sky): ImageVector = when (sky) {
     Sky.SUN -> Icons.Filled.WbSunny
     Sky.HAZY -> Icons.Filled.WbCloudy
     Sky.OVERCAST, Sky.CLOUDY -> Icons.Filled.Cloud
@@ -488,13 +531,13 @@ private fun skyIcon(sky: Sky): ImageVector = when (sky) {
     Sky.STORM -> Icons.Filled.Thunderstorm
 }
 
-private fun skyTint(sky: Sky): Color = when (sky) {
+internal fun skyTint(sky: Sky): Color = when (sky) {
     Sky.SUN, Sky.HAZY -> SunAmber
     else -> skyColor(sky).let { if (it.red + it.green + it.blue < 0.6f) Color(0xFFB0B4C0) else it }
 }
 
 /** The strip colour for each sky: amber for sun, greys for cloud, blue for rain. */
-private fun skyColor(sky: Sky): Color = when (sky) {
+internal fun skyColor(sky: Sky): Color = when (sky) {
     Sky.SUN -> SunAmber
     Sky.HAZY -> Color(0xFFB09858)
     Sky.OVERCAST -> Color(0xFF6B6B72)

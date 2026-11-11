@@ -62,6 +62,11 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     // Sun position, sunrise/sunset and golden/blue hour.
     implementation("org.shredzone.commons:commons-suncalc:3.11")
+    // The Sun tab's camera view.
+    val cameraX = "1.4.2"
+    implementation("androidx.camera:camera-camera2:$cameraX")
+    implementation("androidx.camera:camera-lifecycle:$cameraX")
+    implementation("androidx.camera:camera-view:$cameraX")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
