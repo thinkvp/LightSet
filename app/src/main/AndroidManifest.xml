@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- Checking GitHub for a newer release. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Sun tab: approximate location is enough for sun times and the forecast. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />

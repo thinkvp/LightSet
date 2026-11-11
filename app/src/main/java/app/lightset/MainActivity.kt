@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Lightbulb
+import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -53,6 +54,8 @@ import app.lightset.ui.LightsScreen
 import app.lightset.ui.LightsViewModel
 import app.lightset.ui.MeterScreen
 import app.lightset.ui.MeterViewModel
+import app.lightset.ui.SunScreen
+import app.lightset.ui.SunViewModel
 import app.lightset.update.Update
 import app.lightset.update.UpdateChecker
 import kotlinx.coroutines.flow.collectLatest
@@ -108,13 +111,19 @@ class MainActivity : ComponentActivity() {
                                     icon = { Icon(Icons.Filled.Lightbulb, contentDescription = null) },
                                     label = { Text("Lights") },
                                 )
+                                NavigationBarItem(
+                                    selected = tab == 2, onClick = { tab = 2 },
+                                    icon = { Icon(Icons.Filled.WbSunny, contentDescription = null) },
+                                    label = { Text("Sun") },
+                                )
                             }
                         },
                     ) { padding ->
                         Box(Modifier.padding(padding)) {
                             when (tab) {
                                 0 -> MeterScreen(viewModel<MeterViewModel>())
-                                else -> LightsScreen(viewModel<LightsViewModel>())
+                                1 -> LightsScreen(viewModel<LightsViewModel>())
+                                else -> SunScreen(viewModel<SunViewModel>())
                             }
                         }
                     }

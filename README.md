@@ -35,6 +35,13 @@ lights over Bluetooth until their colour matches it.
   up by hand back to the app's settings. Opening the Lights tab checks the lights (and
   reconnects) straight away.
 
+- **Sun:** sunrise, sunset (with compass direction), solar noon, golden hour (+6° to −4°)
+  and blue hour (−4° to −8°) for where the phone is, on any date. A graph shows the sun's
+  height through the day, with each hour's sky from the forecast underneath, and an hourly
+  list gives the sun's direction and height, cloud, rain chance and temperature. The sky
+  is judged by how much of a clear sky's direct sunlight gets through (Open-Meteo's
+  forecast, 16 days ahead), so thin high cloud still reads as sun. It uses approximate
+  location, and keeps the last place and forecast for use without signal.
 - **Updates:** when the app starts it checks GitHub for a newer release and offers to
   download it (installs over the current version), or to ask again tomorrow or in a week.
 
