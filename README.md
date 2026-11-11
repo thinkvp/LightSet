@@ -39,11 +39,15 @@ lights over Bluetooth until their colour matches it.
   - **Camera** (shown on opening): the day's sun path over the live camera, coloured for
     daylight, golden hour (+6° to −4°) and blue hour (−4° to −8°), with each hour as its
     forecast sky's icon, compass points along the horizon and the sun now. A slider painted
-    with each hour's sky picks a time. Phone compasses drift, so "line up" (the crosshair)
-    lets you tap the real sun to correct it until the app closes.
+    with each hour's sky picks a time; the panel shows that hour's sky, rain chance, cloud,
+    temperature and wind, and the sun's bearing and height as small dials. Phone compasses
+    drift, so "line up" (the crosshair) lets you tap the real sun to correct it until the
+    app closes.
   - **Day:** sunrise and sunset with compass directions, solar noon, golden and blue hour,
-    a graph of the sun's height over each hour's sky, and an hourly list of the sun's
-    direction and height, cloud, rain chance and temperature.
+    a graph of the sun's height over each hour's sky, and an hourly list of the sky, rain
+    chance and cloud (as icons), wind (an arrow the way it blows, speed and gusts) and
+    temperature. Wind turns amber when gusts reach 40 km/h, enough to trouble stands,
+    frames and audio.
   - **Map:** the sun drawn around a place on an OpenStreetMap map (OpenFreeMap tiles): the
     day's path as a ring (higher is nearer the middle), sunrise and sunset lines, and the sun
     at the slider's time with its shadow. Hold the map to drop a pin, or search by name;
