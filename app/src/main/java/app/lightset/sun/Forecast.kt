@@ -12,7 +12,8 @@ import java.util.Locale
 
 /**
  * One hour of forecast. Cloud and rain chance are percentages. [dni] is direct sunlight
- * on a surface facing the sun (W/m²), averaged over the hour *before* [time].
+ * on a surface facing the sun (W/m²), averaged over the hour *before* [time]. Wind is at
+ * 10 m in km/h; [windDirection] is where it blows *from*, in degrees from north.
  */
 data class HourWeather(
     val time: Instant,
@@ -24,6 +25,9 @@ data class HourWeather(
     val precipProbability: Int?,
     val dni: Double?,
     val code: Int?,
+    val windSpeed: Double? = null,
+    val windGusts: Double? = null,
+    val windDirection: Double? = null,
 )
 
 /** An hourly forecast for one place, as fetched at [fetchedAt]. [json] is kept so it can be cached. */
@@ -52,7 +56,8 @@ class Forecast(
 object OpenMeteo {
     const val DAYS = 16
     private const val FIELDS = "temperature_2m,cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high," +
-        "precipitation_probability,direct_normal_irradiance,weather_code"
+        "precipitation_probability,direct_normal_irradiance,weather_code," +
+        "wind_speed_10m,wind_gusts_10m,wind_direction_10m"
 
     /** The request for a place, rounded to about 1 km, which is all a forecast needs. */
     fun url(lat: Double, lon: Double): String =
@@ -88,6 +93,9 @@ object OpenMeteo {
         val precip = ints("precipitation_probability")
         val dni = ints("direct_normal_irradiance")
         val code = ints("weather_code")
+        val wind = ints("wind_speed_10m")
+        val gusts = ints("wind_gusts_10m")
+        val windDir = ints("wind_direction_10m")
         val hours = (0 until times.length()).map { i ->
             HourWeather(
                 time = Instant.ofEpochSecond(times.getLong(i)),
@@ -99,6 +107,9 @@ object OpenMeteo {
                 precipProbability = precip.int(i),
                 dni = dni.double(i),
                 code = code.int(i),
+                windSpeed = wind.double(i),
+                windGusts = gusts.double(i),
+                windDirection = windDir.double(i),
             )
         }.filter { it.cloudCover != null || it.dni != null || it.code != null }
         // The last day or so of the 16 often comes back empty; those hours count as no forecast.

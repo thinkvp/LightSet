@@ -22,6 +22,9 @@ class OpenMeteoTest {
         assertEquals(5, h.cloudLow)
         assertNull(h.cloudMid)
         assertEquals(1, h.code)
+        assertEquals(14.2, h.windSpeed!!, 0.001)
+        assertEquals(31.0, h.windGusts!!, 0.001)
+        assertEquals(225.0, h.windDirection!!, 0.001)
         assertNull(f.at(Instant.ofEpochSecond(start + 2 * 3600))!!.dni)
         assertNull(f.at(Instant.ofEpochSecond(start + 30)))
     }
@@ -33,5 +36,6 @@ class OpenMeteoTest {
         assertTrue(url.contains("timeformat=unixtime"))
         assertTrue(url.contains("direct_normal_irradiance"))
         assertTrue(url.contains("forecast_days=16"))
+        assertTrue(url.contains("wind_gusts_10m"))
     }
 }

@@ -31,6 +31,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AcUnit
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.Navigation
+import androidx.compose.material.icons.filled.WaterDrop
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.unit.Dp
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.ChevronLeft
@@ -499,15 +503,26 @@ private fun HourItem(h: HourRow, current: Boolean, fmt: TimeFormats) {
         Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
             Text(sky?.label ?: if (h.sun.altitude > 0) "Sun up" else "Sun down", style = MaterialTheme.typography.bodyMedium,
                 color = if (sky == null) muted else Color.Unspecified)
-            weatherDetail(h)?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
+            WeatherIcons(h)
         }
+        // Wind: which way it blows, its speed, and gusts (amber when they'd trouble a stand).
         Column(Modifier.width(92.dp), horizontalAlignment = Alignment.End) {
-            Text("${Sun.compassPoint(h.sun.azimuth)} ${h.sun.azimuth.roundToInt()}°", style = MaterialTheme.typography.bodyMedium,
-                maxLines = 1, softWrap = false)
-            val alt = h.sun.altitude.roundToInt()
-            Text(if (alt >= 0) "$alt° up" else "${-alt}° below", style = MaterialTheme.typography.bodySmall, color = muted)
+            val w = h.weather
+            val speed = w?.windSpeed
+            if (speed != null) {
+                // The whole entry goes amber when gusts reach the limit, so it's not read as the speed's.
+                val gusty = (w.windGusts ?: speed) >= GUSTY_KMH
+                val main = if (gusty) WarnAmber else MaterialTheme.colorScheme.onSurface
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    w.windDirection?.let { WindArrow(it, main, 16.dp) }
+                    Text(" ${speed.roundToInt()} km/h", style = MaterialTheme.typography.bodyMedium, color = main,
+                        maxLines = 1, softWrap = false)
+                }
+                w.windGusts?.let { g ->
+                    Text("gusts ${g.roundToInt()}", style = MaterialTheme.typography.bodySmall,
+                        color = if (gusty) WarnAmber else muted, maxLines = 1)
+                }
+            }
         }
         Text(
             h.weather?.temperature?.let { "${it.roundToInt()}°" } ?: "",
@@ -516,18 +531,39 @@ private fun HourItem(h: HourRow, current: Boolean, fmt: TimeFormats) {
     }
 }
 
-/**
- * The chance of rain if it's worth saying, then cloud and the low cloud that hides the sun.
- * Rain goes first so a narrow row cuts off the low cloud rather than it.
- */
-private fun weatherDetail(h: HourRow): String? {
-    val w = h.weather ?: return null
-    val parts = buildList {
-        w.precipProbability?.takeIf { it >= 10 }?.let { add("rain $it%") }
-        w.cloudCover?.let { add("cloud $it%") }
-        w.cloudLow?.takeIf { it > 0 }?.let { add("low $it%") }
+/** Gusts from this (km/h) are enough to worry about stands, frames and wind noise. */
+internal const val GUSTY_KMH = 40.0
+
+/** An arrow pointing the way the wind blows, for wind coming from [from]° (north 0). */
+@Composable
+internal fun WindArrow(from: Double, tint: Color, size: Dp) {
+    Icon(
+        Icons.Filled.Navigation,
+        contentDescription = "Wind from the ${Sun.compassPoint(from)}",
+        tint = tint,
+        modifier = Modifier.size(size).rotate((from + 180).toFloat()),
+    )
+}
+
+/** The chance of rain (if it's worth saying) and cloud cover, each as an icon and a number. */
+@Composable
+private fun WeatherIcons(h: HourRow) {
+    val w = h.weather ?: return
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        w.precipProbability?.takeIf { it >= 10 }?.let { IconValue(Icons.Filled.WaterDrop, "Chance of rain", "$it%", RainBlue, muted) }
+        w.cloudCover?.let { IconValue(Icons.Filled.Cloud, "Cloud cover", "$it%", Color(0xFFB0B4C0), muted) }
     }
-    return parts.joinToString(" · ").replaceFirstChar { it.uppercase() }.ifEmpty { null }
+}
+
+private val RainBlue = Color(0xFF7FB0DD)
+
+@Composable
+private fun IconValue(icon: ImageVector, description: String, value: String, tint: Color, textColor: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(14.dp))
+        Text(" $value", style = MaterialTheme.typography.bodySmall, color = textColor, maxLines = 1)
+    }
 }
 
 internal fun skyIcon(sky: Sky): ImageVector = when (sky) {

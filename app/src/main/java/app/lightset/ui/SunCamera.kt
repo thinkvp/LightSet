@@ -590,6 +590,15 @@ private fun SkyBadge(hour: HourRow?) {
             w?.precipProbability?.takeIf { it >= 10 }?.let { Stat(Icons.Filled.WaterDrop, "$it%", Color(0xFF7FB0DD)) }
             w?.cloudCover?.let { Stat(Icons.Filled.Cloud, "$it%", Color(0xFFB0B4C0)) }
             w?.temperature?.let { Stat(Icons.Filled.Thermostat, "${it.roundToInt()}°", Color(0xFFB0B4C0)) }
+            w?.windSpeed?.let { speed ->
+                val gusty = (w.windGusts ?: speed) >= GUSTY_KMH
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val tint = if (gusty) WarnAmber else Color(0xFFB0B4C0)
+                    w.windDirection?.let { WindArrow(it, tint, 12.dp) }
+                    Text(" ${speed.roundToInt()} km/h", fontSize = 11.sp, lineHeight = 13.sp,
+                        color = if (gusty) WarnAmber else MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
     }
 }

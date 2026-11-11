@@ -87,7 +87,10 @@ fun forecastJson(startEpoch: Long, dni: List<Double?>): String {
            "cloud_cover_high":${arr { "35" }},
            "precipitation_probability":${arr { "0" }},
            "direct_normal_irradiance":${arr { dni[it]?.toString() ?: "null" }},
-           "weather_code":${arr { "1" }}
+           "weather_code":${arr { "1" }},
+           "wind_speed_10m":${arr { "14.2" }},
+           "wind_gusts_10m":${arr { "31.0" }},
+           "wind_direction_10m":${arr { "225" }}
          }}
     """.trimIndent()
 }
