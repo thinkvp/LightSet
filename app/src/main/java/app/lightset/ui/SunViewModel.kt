@@ -117,7 +117,10 @@ class SunViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             while (true) {
                 delay(60_000 - System.currentTimeMillis() % 60_000)
+                val wasToday = _state.value.let { it.date == it.today }
                 _state.update { it.copy(now = ZonedDateTime.now()) }
+                // Showing today when midnight passes: move on to the new today.
+                if (wasToday && _state.value.let { it.date != it.today }) goToToday()
             }
         }
     }
@@ -149,6 +152,12 @@ class SunViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun shiftDate(days: Long) = setDate(_state.value.date.plusDays(days))
+
+    fun goToToday() {
+        _state.update { it.copy(now = ZonedDateTime.now()) }
+        val today = _state.value.today
+        if (_state.value.date != today) setDate(today)
+    }
 
     fun setMode(mode: SunMode) {
         val before = _state.value.shownPlace

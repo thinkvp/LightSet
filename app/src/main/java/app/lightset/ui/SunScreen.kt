@@ -114,8 +114,11 @@ fun SunScreen(vm: SunViewModel) {
         vm.onShown()
         onPauseOrDispose { }
     }
-    // Opening the tab starts on the camera.
-    LaunchedEffect(Unit) { vm.setMode(SunMode.CAMERA) }
+    // Opening the tab starts on the camera, today.
+    LaunchedEffect(Unit) {
+        vm.setMode(SunMode.CAMERA)
+        vm.goToToday()
+    }
     val is24h = DateFormat.is24HourFormat(LocalContext.current)
     val fmt = remember(is24h) { TimeFormats(is24h) }
     Column(Modifier.fillMaxSize()) {

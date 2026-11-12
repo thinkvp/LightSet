@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -76,6 +77,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -568,7 +570,11 @@ internal fun TimePanel(state: SunUiState, vm: SunViewModel, fmt: TimeFormats, se
                 }
             }
             Spacer(Modifier.weight(1f))
-            SkyBadge(hour)
+            // Always four lines (rain shows even when low), and room kept for them past the
+            // forecast, so the panel doesn't jump while dragging.
+            Box(Modifier.heightIn(min = with(LocalDensity.current) { (STAT_LINE * 4).toDp() }), contentAlignment = Alignment.CenterStart) {
+                SkyBadge(hour)
+            }
             Spacer(Modifier.width(12.dp))
             Dial(Sun.compassPoint(selected.azimuth)) { drawCompassDial(selected.azimuth) }
             Spacer(Modifier.width(8.dp))
@@ -587,7 +593,7 @@ private fun SkyBadge(hour: HourRow?) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(skyIcon(sky), contentDescription = sky.label, tint = skyTint(sky), modifier = Modifier.size(34.dp))
         Column(Modifier.padding(start = 6.dp)) {
-            w?.precipProbability?.takeIf { it >= 10 }?.let { Stat(Icons.Filled.WaterDrop, "$it%", Color(0xFF7FB0DD)) }
+            w?.precipProbability?.let { Stat(Icons.Filled.WaterDrop, "$it%", Color(0xFF7FB0DD)) }
             w?.cloudCover?.let { Stat(Icons.Filled.Cloud, "$it%", Color(0xFFB0B4C0)) }
             w?.temperature?.let { Stat(Icons.Filled.Thermostat, "${it.roundToInt()}°", Color(0xFFB0B4C0)) }
             w?.windSpeed?.let { speed ->
@@ -595,7 +601,7 @@ private fun SkyBadge(hour: HourRow?) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     val tint = if (gusty) WarnAmber else Color(0xFFB0B4C0)
                     w.windDirection?.let { WindArrow(it, tint, 12.dp) }
-                    Text(" ${speed.roundToInt()} km/h", fontSize = 11.sp, lineHeight = 13.sp,
+                    Text(" ${speed.roundToInt()} km/h", fontSize = 11.sp, lineHeight = STAT_LINE,
                         color = if (gusty) WarnAmber else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
@@ -603,11 +609,14 @@ private fun SkyBadge(hour: HourRow?) {
     }
 }
 
+/** One line of the stack beside the sky icon. */
+private val STAT_LINE = 14.sp
+
 @Composable
 private fun Stat(icon: ImageVector, text: String, tint: Color) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(12.dp))
-        Text(" $text", fontSize = 11.sp, lineHeight = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(" $text", fontSize = 11.sp, lineHeight = STAT_LINE, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
