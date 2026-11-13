@@ -4,9 +4,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.net.URL
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.util.Locale
 
@@ -64,17 +68,45 @@ object OpenMeteo {
         "https://api.open-meteo.com/v1/forecast?latitude=%.2f&longitude=%.2f&hourly=%s&forecast_days=%d&timezone=auto&timeformat=unixtime"
             .format(Locale.US, lat, lon, FIELDS, DAYS)
 
+    /**
+     * The same forecast from Open-Meteo's archive server, which runs on separate hosting
+     * and also holds the latest forecast runs into the future. Used when the main server
+     * doesn't answer, which happens: it's routed by region, and one region's server can be
+     * unreachable while the rest are fine. From yesterday (so every time zone's today is
+     * covered) to [DAYS] days on.
+     */
+    fun fallbackUrl(lat: Double, lon: Double, today: LocalDate): String =
+        ("https://historical-forecast-api.open-meteo.com/v1/forecast?latitude=%.2f&longitude=%.2f&hourly=%s" +
+            "&start_date=%s&end_date=%s&timezone=auto&timeformat=unixtime")
+            .format(Locale.US, lat, lon, FIELDS, today.minusDays(1), today.plusDays(DAYS - 1L))
+
+    /** The forecast from the main server, or the archive server if the main one fails. */
     suspend fun fetch(lat: Double, lon: Double): Forecast = withContext(Dispatchers.IO) {
-        val conn = URL(url(lat, lon)).openConnection() as HttpURLConnection
         try {
-            conn.connectTimeout = 10_000
+            get(url(lat, lon), connectMs = 6_000)
+        } catch (main: Exception) {
+            try {
+                get(fallbackUrl(lat, lon, LocalDate.now()), connectMs = 10_000)
+            } catch (e: Exception) {
+                // Say what went wrong with the main server, in plain words where it's a timeout.
+                throw if (main is SocketTimeoutException || main is UnknownHostException) {
+                    IOException("forecast server not responding")
+                } else main
+            }
+        }
+    }
+
+    private fun get(address: String, connectMs: Int): Forecast {
+        val conn = URL(address).openConnection() as HttpURLConnection
+        try {
+            conn.connectTimeout = connectMs
             conn.readTimeout = 15_000
             if (conn.responseCode != 200) {
                 val reason = conn.errorStream?.bufferedReader()?.use { it.readText() }
                     ?.let { runCatching { JSONObject(it).optString("reason") }.getOrNull() }
                 throw IllegalStateException(reason?.takeIf { it.isNotBlank() } ?: "HTTP ${conn.responseCode}")
             }
-            parse(conn.inputStream.bufferedReader().use { it.readText() }, Instant.now())
+            return parse(conn.inputStream.bufferedReader().use { it.readText() }, Instant.now())
         } finally {
             conn.disconnect()
         }

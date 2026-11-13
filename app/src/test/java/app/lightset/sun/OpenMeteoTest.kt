@@ -38,4 +38,14 @@ class OpenMeteoTest {
         assertTrue(url.contains("forecast_days=16"))
         assertTrue(url.contains("wind_gusts_10m"))
     }
+
+    @Test
+    fun fallbackAsksForTheSameFieldsOverTheSameDays() {
+        val url = OpenMeteo.fallbackUrl(51.507412, -0.127812, java.time.LocalDate.of(2026, 11, 13))
+        assertTrue(url, url.startsWith("https://historical-forecast-api.open-meteo.com/v1/forecast?"))
+        assertTrue(url.contains("latitude=51.51&longitude=-0.13"))
+        assertTrue(url.contains("start_date=2026-11-12&end_date=2026-11-28"))
+        assertTrue(url.contains("direct_normal_irradiance") && url.contains("wind_gusts_10m"))
+        assertTrue(url.contains("timeformat=unixtime"))
+    }
 }
