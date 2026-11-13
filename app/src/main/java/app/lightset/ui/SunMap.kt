@@ -295,7 +295,7 @@ private fun DrawScope.drawSunDiagram(
         val sky = h.sky
         if (sky != null) {
             drawCircle(shadowColor, 12.dp.toPx(), p)
-            icon(icons.sky.getValue(sky), p, 17.dp.toPx(), skyTint(sky))
+            icon(icons.sky.getValue(sky), p, 17.dp.toPx(), tint = null)
         } else {
             drawCircle(shadowColor, 6.dp.toPx(), p)
             drawCircle(Color(0xFFDDDDDD), 4.dp.toPx(), p)

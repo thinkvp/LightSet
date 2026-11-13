@@ -46,8 +46,10 @@ lights over Bluetooth until their colour matches it.
   - **Day:** sunrise and sunset with compass directions, solar noon, golden and blue hour,
     a graph of the sun's height over each hour's sky, and an hourly list of the sky, rain
     chance and cloud (as icons), wind (an arrow the way it blows, speed and gusts) and
-    temperature. Wind turns amber when gusts reach 40 km/h, enough to trouble stands,
-    frames and audio.
+    temperature. Wind turns amber when gusts reach 40 km/h (25 mph), enough to trouble
+    stands, frames and audio. Temperature and wind follow the phone's region: °F in the
+    US, mph in the US and UK, °C and km/h elsewhere (Android 14's Regional preferences can
+    override the temperature unit).
   - **Map:** the sun drawn around a place on an OpenStreetMap map (OpenFreeMap tiles): the
     day's path as a ring (higher is nearer the middle), sunrise and sunset lines, and the sun
     at the slider's time with its shadow. Hold the map to drop a pin, or search by name;

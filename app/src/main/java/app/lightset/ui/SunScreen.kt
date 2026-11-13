@@ -28,7 +28,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AcUnit
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Navigation
@@ -40,14 +39,7 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Cloud
-import androidx.compose.material.icons.filled.CloudQueue
-import androidx.compose.material.icons.filled.Dehaze
-import androidx.compose.material.icons.filled.Grain
-import androidx.compose.material.icons.filled.NightsStay
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Thunderstorm
-import androidx.compose.material.icons.filled.Umbrella
-import androidx.compose.material.icons.filled.WbCloudy
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -55,6 +47,7 @@ import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.foundation.Image
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -69,6 +62,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -96,6 +90,7 @@ import app.lightset.sun.Sky
 import app.lightset.sun.Sun
 import app.lightset.sun.SunDay
 import app.lightset.sun.Window
+import app.lightset.sun.WeatherUnits
 import java.time.Duration
 import java.time.LocalDate
 import java.time.ZonedDateTime
@@ -479,6 +474,7 @@ private fun HourList(state: SunUiState, fmt: TimeFormats) {
 @Composable
 private fun HourItem(h: HourRow, current: Boolean, fmt: TimeFormats) {
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val units = rememberWeatherUnits()
     Row(
         Modifier
             .fillMaxWidth()
@@ -501,7 +497,7 @@ private fun HourItem(h: HourRow, current: Boolean, fmt: TimeFormats) {
             style = MaterialTheme.typography.bodyMedium, fontWeight = if (current) FontWeight.SemiBold else null)
         val sky = h.sky
         Box(Modifier.width(30.dp)) {
-            if (sky != null) Icon(skyIcon(sky), contentDescription = null, tint = skyTint(sky), modifier = Modifier.size(20.dp))
+            if (sky != null) Image(skyIcon(sky), contentDescription = null, modifier = Modifier.size(20.dp))
         }
         Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
             Text(sky?.label ?: if (h.sun.altitude > 0) "Sun up" else "Sun down", style = MaterialTheme.typography.bodyMedium,
@@ -518,20 +514,27 @@ private fun HourItem(h: HourRow, current: Boolean, fmt: TimeFormats) {
                 val main = if (gusty) WarnAmber else MaterialTheme.colorScheme.onSurface
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     w.windDirection?.let { WindArrow(it, main, 16.dp) }
-                    Text(" ${speed.roundToInt()} km/h", style = MaterialTheme.typography.bodyMedium, color = main,
+                    Text(" ${units.speed(speed)}", style = MaterialTheme.typography.bodyMedium, color = main,
                         maxLines = 1, softWrap = false)
                 }
                 w.windGusts?.let { g ->
-                    Text("gusts ${g.roundToInt()}", style = MaterialTheme.typography.bodySmall,
+                    Text("gusts ${units.speedNumber(g)}", style = MaterialTheme.typography.bodySmall,
                         color = if (gusty) WarnAmber else muted, maxLines = 1)
                 }
             }
         }
         Text(
-            h.weather?.temperature?.let { "${it.roundToInt()}°" } ?: "",
+            h.weather?.temperature?.let { units.temperature(it) } ?: "",
             Modifier.width(38.dp), style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.End,
         )
     }
+}
+
+/** The phone region's weather units, following a change of region. */
+@Composable
+internal fun rememberWeatherUnits(): WeatherUnits {
+    val locale = LocalConfiguration.current.locales[0]
+    return remember(locale) { WeatherUnits.forLocale(locale) }
 }
 
 /** Gusts from this (km/h) are enough to worry about stands, frames and wind noise. */
@@ -567,24 +570,6 @@ private fun IconValue(icon: ImageVector, description: String, value: String, tin
         Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(14.dp))
         Text(" $value", style = MaterialTheme.typography.bodySmall, color = textColor, maxLines = 1)
     }
-}
-
-internal fun skyIcon(sky: Sky): ImageVector = when (sky) {
-    Sky.SUN -> Icons.Filled.WbSunny
-    Sky.HAZY -> Icons.Filled.WbCloudy
-    Sky.OVERCAST, Sky.CLOUDY -> Icons.Filled.Cloud
-    Sky.CLEAR -> Icons.Filled.NightsStay
-    Sky.PARTLY -> Icons.Filled.CloudQueue
-    Sky.FOG -> Icons.Filled.Dehaze
-    Sky.DRIZZLE -> Icons.Filled.Grain
-    Sky.RAIN -> Icons.Filled.Umbrella
-    Sky.SNOW -> Icons.Filled.AcUnit
-    Sky.STORM -> Icons.Filled.Thunderstorm
-}
-
-internal fun skyTint(sky: Sky): Color = when (sky) {
-    Sky.SUN, Sky.HAZY -> SunAmber
-    else -> skyColor(sky).let { if (it.red + it.green + it.blue < 0.6f) Color(0xFFB0B4C0) else it }
 }
 
 /** The strip colour for each sky: amber for sun, greys for cloud, blue for rain. */

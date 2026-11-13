@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.filled.WbTwilight
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.foundation.Image
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -346,10 +347,10 @@ internal fun DrawScope.centredLabel(measurer: TextMeasurer, text: String, center
     label(measurer, text, Offset(center.x - s.width / 2f, center.y - s.height / 2f), style)
 }
 
-/** An icon [sizePx] across, centred on [center], tinted [tint]. */
-internal fun DrawScope.icon(p: Painter, center: Offset, sizePx: Float, tint: Color) {
+/** An icon [sizePx] across, centred on [center], tinted [tint] (or in its own colours if null). */
+internal fun DrawScope.icon(p: Painter, center: Offset, sizePx: Float, tint: Color?) {
     translate(center.x - sizePx / 2, center.y - sizePx / 2) {
-        with(p) { draw(GeoSize(sizePx, sizePx), colorFilter = ColorFilter.tint(tint)) }
+        with(p) { draw(GeoSize(sizePx, sizePx), colorFilter = tint?.let { ColorFilter.tint(it) }) }
     }
 }
 
@@ -429,7 +430,7 @@ private fun DrawScope.drawHours(proj: SkyProjection, measurer: TextMeasurer, ico
         val sky = h.sky
         if (sky != null) {
             drawCircle(shadowColor, 14.dp.toPx(), c)
-            icon(icons.sky.getValue(sky), c, 20.dp.toPx(), skyTint(sky))
+            icon(icons.sky.getValue(sky), c, 20.dp.toPx(), tint = null)
         } else {
             drawCircle(shadowColor, 7.dp.toPx(), c)
             drawCircle(Color(0xFFDDDDDD), 5.dp.toPx(), c)
@@ -590,18 +591,19 @@ internal fun TimePanel(state: SunUiState, vm: SunViewModel, fmt: TimeFormats, se
 private fun SkyBadge(hour: HourRow?) {
     val sky = hour?.sky ?: return
     val w = hour.weather
+    val units = rememberWeatherUnits()
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(skyIcon(sky), contentDescription = sky.label, tint = skyTint(sky), modifier = Modifier.size(34.dp))
+        Image(skyIcon(sky), contentDescription = sky.label, modifier = Modifier.size(34.dp))
         Column(Modifier.padding(start = 6.dp)) {
             w?.precipProbability?.let { Stat(Icons.Filled.WaterDrop, "$it%", Color(0xFF7FB0DD)) }
             w?.cloudCover?.let { Stat(Icons.Filled.Cloud, "$it%", Color(0xFFB0B4C0)) }
-            w?.temperature?.let { Stat(Icons.Filled.Thermostat, "${it.roundToInt()}°", Color(0xFFB0B4C0)) }
+            w?.temperature?.let { Stat(Icons.Filled.Thermostat, units.temperature(it), Color(0xFFB0B4C0)) }
             w?.windSpeed?.let { speed ->
                 val gusty = (w.windGusts ?: speed) >= GUSTY_KMH
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     val tint = if (gusty) WarnAmber else Color(0xFFB0B4C0)
                     w.windDirection?.let { WindArrow(it, tint, 12.dp) }
-                    Text(" ${speed.roundToInt()} km/h", fontSize = 11.sp, lineHeight = STAT_LINE,
+                    Text(" ${units.speed(speed)}", fontSize = 11.sp, lineHeight = STAT_LINE,
                         color = if (gusty) WarnAmber else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
