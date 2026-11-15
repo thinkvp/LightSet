@@ -4,6 +4,13 @@ Android app for matching interview lights to the ambient light. Point the phone 
 a white or grey card, save the ambient as a reference, and LightSet adjusts Nanlite
 lights over Bluetooth until their colour matches it.
 
+<p>
+  <img src="docs/screenshots/LightSet%20-%20Ambient%20Read%20and%20Match.png" width="24%" alt="Match tab: ambient read off a card saved as the reference, with a light ready to match">
+  <img src="docs/screenshots/LightSet%20-%20Light%20Controls.png" width="24%" alt="Lights tab: Nanlite lights with brightness, CCT and G/M controls">
+  <img src="docs/screenshots/LightSet%20-%20Sun%20Tracking.png" width="24%" alt="Sun tab, Camera view: the day's sun path over the live camera with each hour's forecast sky">
+  <img src="docs/screenshots/LightSet%20-%20Map%20View.png" width="24%" alt="Sun tab, Map view: the sun's path, sunrise and sunset lines drawn around a place on the map">
+</p>
+
 ## What it does
 
 - **Meter:** colour temp and tint (Duv) of the light on a card, from the phone's RAW
