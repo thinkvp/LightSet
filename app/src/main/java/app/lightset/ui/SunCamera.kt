@@ -52,6 +52,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -143,6 +144,7 @@ internal fun SunCamera(state: SunUiState, vm: SunViewModel, fmt: TimeFormats) {
     val readings = remember { orientation.readings() }
     val reading by readings.collectAsStateWithLifecycle(initialValue = null)
     val declination = remember(place) { Orientation.declination(place.lat, place.lon) }
+    LaunchedEffect(place) { orientation.expectedFieldUt = Orientation.fieldStrengthUt(place.lat, place.lon) }
     val icons = rememberOverlayIcons()
     val sel = rememberSelection(state, place)
     val selected = sel.pos
